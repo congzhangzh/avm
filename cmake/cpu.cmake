@@ -129,6 +129,25 @@ elseif("${AVM_TARGET_CPU}" MATCHES "^x86")
     set(RTCD_ARCH_X86_64 "yes")
   endif()
 
+  if(EMSCRIPTEN)
+    # WebAssembly: Emscripten maps the SSE..SSE4.1 intrinsics onto SIMD128.
+    # The x86 kernels are built, but the target is not x86 (no CPUID, emms or
+    # assembler), the flavors are fixed at build time, and SSE4.2 and AVX/AVX2
+    # (which Emscripten would split into 128-bit halves) stay off.
+    set(ARCH_X86 0)
+    set(ARCH_X86_64 0)
+    set(CONFIG_RUNTIME_CPU_DETECT 0)
+    set(ENABLE_SSE4_2 0)
+    # On every compile (and flag check): emcc refuses -msseN without it.
+    string(APPEND CMAKE_C_FLAGS " -msimd128")
+    string(APPEND CMAKE_CXX_FLAGS " -msimd128")
+    # The kernels written in x86 assembly stay C (add_asm_library skips them).
+    list(APPEND AVM_RTCD_FLAGS
+         "--exclude=^avm_highbd_(dc|v)_predictor_(4x4|8x8|16x16|32x32)_sse2$"
+         "--exclude=^avm_highbd_sad[0-9]+x[0-9]+_sse2$"
+         "--exclude=^avm_highbd_convolve8_(horiz|vert)_sse2$")
+  endif()
+
   set(X86_FLAVORS "MMX;SSE;SSE2;SSE3;SSSE3;SSE4_1;SSE4_2;AVX;AVX2")
   foreach(flavor ${X86_FLAVORS})
     if(ENABLE_${flavor} AND NOT disable_remaining_flavors)

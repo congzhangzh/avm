@@ -145,7 +145,8 @@ endfunction()
 # directory/target/object names are updated to include _shared and _static
 # suffixes.
 function(add_asm_library lib_name asm_sources)
-  if("${${asm_sources}}" STREQUAL "")
+  # No x86 assembler for WebAssembly: those kernels stay C (rtcd.pl --exclude).
+  if("${${asm_sources}}" STREQUAL "" OR EMSCRIPTEN)
     return()
   endif()
 

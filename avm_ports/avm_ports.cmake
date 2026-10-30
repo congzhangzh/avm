@@ -55,7 +55,7 @@ function(setup_avm_ports_targets)
     # Xcode is the only one
     set(avm_ports_is_embedded 1)
     set(avm_ports_has_symbols 1)
-  elseif("${AVM_TARGET_CPU}" MATCHES "^x86")
+  elseif("${AVM_TARGET_CPU}" MATCHES "^x86" AND NOT EMSCRIPTEN)
     add_asm_library("avm_ports" "AVM_PORTS_ASM_X86")
     set(avm_ports_has_symbols 1)
   elseif("${AVM_TARGET_CPU}" MATCHES "arm")
