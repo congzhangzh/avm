@@ -674,6 +674,9 @@ static void set_rt_speed_features_framesize_independent(
   if (speed >= 9) {
     sf->mv_sf.intrabc_search_level = 2;
   }
+  if (speed >= 10) {
+    sf->rt_sf.nonrd_newmv_ref = 1;
+  }
 }
 
 static AVM_INLINE void init_hl_sf(HIGH_LEVEL_SPEED_FEATURES *hl_sf) {

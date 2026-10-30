@@ -1034,6 +1034,10 @@ typedef struct REALTIME_SPEED_FEATURES {
   // from) instead of packing the frame once per reference to pick one.
   int skip_primary_ref_frame_search;
 
+  // Run the NEWMV motion search on one reference only: the one whose short
+  // full-pel search scores best by the rate/distortion model.
+  int nonrd_newmv_ref;
+
   // Flag to disable all but DC intra mode for inter frame prediction.
   bool use_only_dc_intra_interframe;
 

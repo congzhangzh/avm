@@ -727,7 +727,9 @@ static avm_codec_err_t validate_config(avm_codec_alg_priv_t *ctx,
   RANGE_CHECK_HI(extra_cfg, sb_multipass_unit_test, 1);
   RANGE_CHECK_HI(extra_cfg, enable_auto_alt_ref, 1);
   RANGE_CHECK_HI(extra_cfg, enable_auto_bwd_ref, 2);
-  RANGE_CHECK(extra_cfg, cpu_used, 0, 9);
+  RANGE_CHECK(extra_cfg, cpu_used, 0, 10);
+  if (extra_cfg->cpu_used > 9 && cfg->g_usage != AVM_USAGE_REALTIME)
+    ERROR("cpu_used 10 exists in realtime mode only");
   RANGE_CHECK_HI(extra_cfg, noise_sensitivity, 6);
   RANGE_CHECK(extra_cfg, superblock_size, AVM_SUPERBLOCK_SIZE_64X64,
               AVM_SUPERBLOCK_SIZE_DYNAMIC);

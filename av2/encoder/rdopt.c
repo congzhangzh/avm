@@ -8924,6 +8924,94 @@ static int is_rt_static_block(const AV2_COMP *cpi, const MACROBLOCKD *xd,
   return 1;
 }
 
+static unsigned int nonrd_fullpel_sad(const AV2_COMP *cpi, const MACROBLOCK *x,
+                                      BLOCK_SIZE bsize,
+                                      const struct buf_2d *pre,
+                                      FULLPEL_MV mv) {
+  const struct buf_2d *src = &x->plane[AVM_PLANE_Y].src;
+  return cpi->fn_ptr[bsize].sdf(src->buf, src->stride,
+                                pre->buf + mv.row * pre->stride + mv.col,
+                                pre->stride);
+}
+
+static int fullmv_in_limits(const FULLPEL_MV *mv, const FullMvLimits *l) {
+  return mv->col >= l->col_min && mv->col <= l->col_max &&
+         mv->row >= l->row_min && mv->row <= l->row_max;
+}
+
+// Realtime: picks the one reference to run the NEWMV motion search on. On
+// every available single reference a short full-pel search (from the
+// predicted vector, zero and the superblock's estimate, then a 4/2/1-pel
+// cross) finds a vector; its luma prediction is scored with the
+// rate/distortion model plus the reference and vector bits, without any
+// transform. Returns NONE_FRAME when no reference could be scored.
+static MV_REFERENCE_FRAME nonrd_pick_newmv_ref(
+    const AV2_COMP *cpi, MACROBLOCK *x, BLOCK_SIZE bsize,
+    struct buf_2d yv12_mb[SINGLE_REF_FRAMES][MAX_MB_PLANE],
+    const unsigned int *ref_costs_single) {
+  const AV2_COMMON *const cm = &cpi->common;
+  MACROBLOCKD *const xd = &x->e_mbd;
+  MB_MODE_INFO *const mbmi = xd->mi[0];
+  static const FULLPEL_MV cross[4] = { { -1, 0 }, { 1, 0 }, { 0, -1 },
+                                       { 0, 1 } };
+  MV_REFERENCE_FRAME best_ref = NONE_FRAME;
+  int64_t best_rd = INT64_MAX;
+  for (MV_REFERENCE_FRAME ref = 0; ref < cm->ref_frames_info.num_total_refs;
+       ++ref) {
+    if (!(cm->ref_frame_flags & (1 << ref))) continue;
+    if (cm->bru.enabled && cm->bru.update_ref_idx == ref) continue;
+    const MV_REFERENCE_FRAME refs[2] = { ref, NONE_FRAME };
+    const struct buf_2d *pre = &yv12_mb[COMPACT_INDEX0_NRS(ref)][0];
+    init_mbmi(mbmi, NEWMV, refs, cm, xd, xd->sbi);
+    const MV ref_mv = av2_get_ref_mv(x, 0).as_mv;
+    FULLPEL_MV cand[3] = { get_fullmv_from_mv(&ref_mv), kZeroFullMv,
+                           x->sb_me_valid ? x->sb_me_mv.as_fullmv
+                                          : kZeroFullMv };
+    FULLPEL_MV best = kZeroFullMv;
+    unsigned int best_sad = UINT_MAX;
+    for (int c = 0; c < 3; ++c) {
+      clamp_fullmv(&cand[c], &x->mv_limits);
+      const unsigned int sad = nonrd_fullpel_sad(cpi, x, bsize, pre, cand[c]);
+      if (sad < best_sad) best_sad = sad, best = cand[c];
+    }
+    for (int step = 4; step >= 1; step >>= 1) {
+      for (int it = 0; it < 4; ++it) {
+        const FULLPEL_MV center = best;
+        for (int k = 0; k < 4; ++k) {
+          const FULLPEL_MV mv = { center.row + cross[k].row * step,
+                                  center.col + cross[k].col * step };
+          if (!fullmv_in_limits(&mv, &x->mv_limits)) continue;
+          const unsigned int sad = nonrd_fullpel_sad(cpi, x, bsize, pre, mv);
+          if (sad < best_sad) best_sad = sad, best = mv;
+        }
+        if (best.row == center.row && best.col == center.col) break;
+      }
+    }
+    // The vector and its difference to the predicted one must fit the
+    // block's MV precision, which can be coarser than full-pel.
+    MV coded_ref_mv = ref_mv;
+    lower_mv_precision(&coded_ref_mv, mbmi->pb_mv_precision);
+    mbmi->mv[0].as_mv = get_mv_from_fullmv(&best);
+    lower_mv_precision(&mbmi->mv[0].as_mv, mbmi->pb_mv_precision);
+    const int mv_rate =
+        av2_mv_bit_cost(&mbmi->mv[0].as_mv, &coded_ref_mv,
+                        mbmi->pb_mv_precision, &x->mv_costs, MV_COST_WEIGHT, 0);
+    set_ref_ptrs(cm, xd, ref, NONE_FRAME);
+    xd->plane[AVM_PLANE_Y].pre[0] = *pre;
+    av2_enc_build_inter_predictor(cm, xd, xd->mi_row, xd->mi_col, NULL, bsize,
+                                  AVM_PLANE_Y, AVM_PLANE_Y);
+    int rate;
+    int64_t dist;
+    model_rd_sb_fn[MODELRD_LEGACY](cpi, bsize, x, xd, AVM_PLANE_Y, AVM_PLANE_Y,
+                                   &rate, &dist, NULL, NULL, NULL, NULL, NULL);
+    const int64_t this_rd = RDCOST(
+        x->rdmult,
+        rate + (int)ref_costs_single[COMPACT_INDEX0_NRS(ref)] + mv_rate, dist);
+    if (this_rd < best_rd) best_rd = this_rd, best_ref = ref;
+  }
+  return best_ref;
+}
+
 void av2_rd_pick_inter_mode_sb(struct AV2_COMP *cpi,
                                struct TileDataEnc *tile_data,
                                struct macroblock *x, struct RD_STATS *rd_cost,
@@ -9258,6 +9346,10 @@ void av2_rd_pick_inter_mode_sb(struct AV2_COMP *cpi,
       !frame_is_sframe(cm) && !thin_4xn_nx4;
 
   const int static_blk = is_rt_static_block(cpi, xd, bsize);
+  const MV_REFERENCE_FRAME newmv_ref =
+      sf->rt_sf.nonrd_newmv_ref && !static_blk && bsize != BLOCK_4X4
+          ? nonrd_pick_newmv_ref(cpi, x, bsize, yv12_mb, ref_costs_single)
+          : NONE_FRAME;
   for (int mode_refs_pair_idx = 0;
        mode_refs_pair_idx < ref_frame_centric_eval_order_num;
        ++mode_refs_pair_idx) {
@@ -9271,6 +9363,11 @@ void av2_rd_pick_inter_mode_sb(struct AV2_COMP *cpi,
     const int is_comp_mode = (second_ref_frame != NONE_FRAME);
     if (static_blk && (is_comp_mode || ref_frame != 0 ||
                        (this_mode != NEARMV && this_mode != GLOBALMV)))
+      continue;
+    // The NEWMV search runs on the reference picked above only, and no
+    // compound mode is tried with it (it was never chosen on camera content).
+    if (newmv_ref != NONE_FRAME &&
+        (is_comp_mode || (this_mode == NEWMV && ref_frame != newmv_ref)))
       continue;
     const int is_single_pred = !is_comp_mode;
     const int comp_pred = is_comp_mode;
