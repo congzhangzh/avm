@@ -790,6 +790,32 @@ static AVM_INLINE void accumulate_counters_enc_workers(AV2_COMP *cpi,
   }
 }
 
+// Copies the main thread's MACROBLOCK into a worker's, leaving out the MV
+// and DV cost tables when keep_tables is set (the worker's are current).
+static void copy_mb_for_worker(MACROBLOCK *dst, const MACROBLOCK *src,
+                               int keep_tables) {
+  if (!keep_tables) {
+    *dst = *src;
+    return;
+  }
+  const size_t skip[2][2] = {
+    { offsetof(MACROBLOCK, mv_costs) +
+          offsetof(MvCosts, nmv_joint_shell_cost),
+      sizeof(src->mv_costs.nmv_joint_shell_cost) },
+    { offsetof(MACROBLOCK, dv_costs) +
+          offsetof(IntraBCMvCosts, dv_joint_shell_cost),
+      sizeof(src->dv_costs.dv_joint_shell_cost) },
+  };
+  assert(skip[0][0] + skip[0][1] <= skip[1][0]);
+  uint8_t *const d = (uint8_t *)dst;
+  const uint8_t *const s = (const uint8_t *)src;
+  memcpy(d, s, skip[0][0]);
+  const size_t mid = skip[0][0] + skip[0][1];
+  memcpy(d + mid, s + mid, skip[1][0] - mid);
+  const size_t end = skip[1][0] + skip[1][1];
+  memcpy(d + end, s + end, sizeof(*dst) - end);
+}
+
 static AVM_INLINE void prepare_enc_workers(AV2_COMP *cpi, AVxWorkerHook hook,
                                            int num_workers) {
   MultiThreadInfo *const mt_info = &cpi->mt_info;
@@ -811,7 +837,15 @@ static AVM_INLINE void prepare_enc_workers(AV2_COMP *cpi, AVxWorkerHook hook,
 
     // Before encoding a frame, copy the thread data from cpi.
     if (thread_data->td != &cpi->td) {
-      thread_data->td->mb = cpi->td.mb;
+      // The two 3.7 MB MV/DV cost tables change only when the main thread
+      // refills them (mv_tables_gen); workers never write theirs while MV
+      // cost updates are off.
+      const int keep_tables =
+          cpi->oxcf.cost_upd_freq.mv == COST_UPD_OFF &&
+          thread_data->td->mv_tables_copied &&
+          thread_data->td->mb.mv_tables_gen == cpi->td.mb.mv_tables_gen;
+      copy_mb_for_worker(&thread_data->td->mb, &cpi->td.mb, keep_tables);
+      thread_data->td->mv_tables_copied = 1;
       thread_data->td->rd_counts = cpi->td.rd_counts;
 
       for (int x = 0; x < 2; x++) {

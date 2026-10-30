@@ -891,6 +891,7 @@ static AVM_INLINE void init_mc_flow_dispenser(AV2_COMP *cpi, int frame_idx,
   av2_fill_mv_costs(cpi->common.fc,
                     cpi->common.features.cur_frame_force_integer_mv,
                     cpi->common.features.fr_mv_precision, mv_costs);
+  x->mv_tables_gen++;
 
   tpl_frame->is_valid = 1;
 
@@ -1272,6 +1273,7 @@ void av2_tpl_setup_stats(AV2_COMP *cpi, int gop_eval,
   }
   av2_fill_mv_costs(cm->fc, cm->features.cur_frame_force_integer_mv,
                     cm->features.fr_mv_precision, &cpi->td.mb.mv_costs);
+  cpi->td.mb.mv_tables_gen++;
 
   // Backward propagation from tpl_group_frames to 1.
   for (int frame_idx = gf_group->index; frame_idx < tpl_gf_group_frames;

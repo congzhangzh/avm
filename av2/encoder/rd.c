@@ -1308,9 +1308,11 @@ void av2_initialize_rd_consts(AV2_COMP *cpi) {
   set_block_thresholds(cm, rd);
 
   if ((cpi->oxcf.cost_upd_freq.mv != COST_UPD_OFF) || frame_is_intra_only(cm) ||
-      (cm->current_frame.frame_number & 0x07) == 1)
+      (cm->current_frame.frame_number & 0x07) == 1) {
     av2_fill_mv_costs(cm->fc, cm->features.cur_frame_force_integer_mv,
                       cm->features.fr_mv_precision, mv_costs);
+    x->mv_tables_gen++;
+  }
 
   // With MV cost updates off, the DV costs follow the MV costs' refresh.
   if (cm->features.allow_intrabc && !is_stat_generation_stage(cpi) &&
@@ -1319,6 +1321,7 @@ void av2_initialize_rd_consts(AV2_COMP *cpi) {
        (cm->current_frame.frame_number & 0x07) == 1 || !cpi->dv_costs_filled)) {
     fill_dv_costs(&x->dv_costs, cm->fc, mv_costs);
     cpi->dv_costs_filled = 1;
+    x->mv_tables_gen++;
   }
 }
 

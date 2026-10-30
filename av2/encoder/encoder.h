@@ -1750,6 +1750,9 @@ typedef struct ThreadData {
   // Row multi-threading with per-tile cost updates: the frame and tile whose
   // starting contexts this thread's cost tables were last filled from.
   uint64_t tile_costs_key;
+  // Whether mb holds a copy of the main thread's MV/DV cost tables, made at
+  // mb.mv_tables_gen.
+  int mv_tables_copied;
 } ThreadData;
 
 struct EncWorkerData;

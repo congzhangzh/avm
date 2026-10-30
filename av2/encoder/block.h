@@ -1646,6 +1646,9 @@ typedef struct macroblock {
   int_mv sb_me_mv;
   /*! \brief Whether sb_me_mv holds an estimate for this superblock. */
   int sb_me_valid;
+  /*! \brief Bumped whenever the main thread refills the MV/DV cost tables,
+   * so workers can tell whether their copies are still current. */
+  unsigned int mv_tables_gen;
   /*! \brief Whether to prune current transform partition search. */
   int prune_tx_partition;
   /*! \brief Keep records of top rdcosts of transform partition search. */
