@@ -5229,7 +5229,11 @@ void fwd_txfm_avx2(const int16_t *resi, tran_low_t *coeff, int diff_stride,
   int skipWidth = width > 32 ? width - 32 : 0;
   int skipHeight = height > 32 ? height - 32 : 0;
 
-  int buf[MAX_TX_SQUARE] = { 0 };
+  // The 1-D passes only touch width * height entries; zero those (plus a
+  // vector of slack) rather than the full 64x64 buffer, which cost a 16 KB
+  // memset per transform even for 4x4.
+  DECLARE_ALIGNED(32, int, buf[MAX_TX_SQUARE]);
+  memset(buf, 0, AVMMIN(MAX_TX_SQUARE, width * height + 32) * sizeof(*buf));
 
   for (int y = 0; y < height; y++) {
     for (int x = 0; x < width; x++) {
