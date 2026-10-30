@@ -556,6 +556,20 @@ typedef struct MV_SPEED_FEATURES {
   // Use faster motion search settings for partition blocks with at least one
   // dimension that's >= 256
   int fast_motion_estimation_on_block_256;
+
+  // Look at no more than 64 blocks with the same hash in the intraBC hash
+  // search. Flat screen areas put tens of thousands of blocks under one hash.
+  int prune_intrabc_candidate_block_hash_search;
+
+  // Build the intraBC hash table and run the hash search only for blocks up
+  // to 8x8.
+  int hash_max_8x8_intrabc_blocks;
+
+  // IntraBC search effort:
+  //   0: full-pixel and hash search for every block size and direction.
+  //   1: only square blocks up to 16x16; the full-pixel search runs only when
+  //      the hash search finds nothing.
+  int intrabc_search_level;
 } MV_SPEED_FEATURES;
 
 typedef struct INTER_MODE_SPEED_FEATURES {

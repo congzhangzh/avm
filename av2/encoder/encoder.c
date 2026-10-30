@@ -2423,7 +2423,12 @@ void av2_set_screen_content_options(AV2_COMP *cpi, FeatureFlags *features) {
   }
 
   if (cm->seq_params.force_screen_content_tools > 0) {
-    features->allow_intrabc = 1;
+    // Realtime: intraBC only where the detector found screen content; its
+    // search costs camera content ~10 % of the encode for nothing.
+    features->allow_intrabc =
+        (cpi->oxcf.mode == REALTIME && cpi->oxcf.speed >= 7)
+            ? features->is_scc_content_by_detector
+            : 1;
     return;
   }
   if (cm->seq_params.force_screen_content_tools != 2) {

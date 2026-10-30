@@ -5970,6 +5970,9 @@ static int64_t rd_pick_intrabc_mode_sb(const AV2_COMP *cpi, MACROBLOCK *x,
   if (!av2_allow_intrabc(cm, xd, bsize) || (xd->tree_type == CHROMA_PART) ||
       !cpi->oxcf.kf_cfg.enable_intrabc)
     return INT64_MAX;
+  if (cpi->sf.mv_sf.intrabc_search_level >= 1 && bsize != BLOCK_4X4 &&
+      bsize != BLOCK_8X8 && bsize != BLOCK_16X16)
+    return INT64_MAX;
   const int num_planes = av2_num_planes(cm);
   const TileInfo *tile = &xd->tile;
   MB_MODE_INFO *mbmi = xd->mi[0];
@@ -6211,96 +6214,128 @@ static int64_t rd_pick_intrabc_mode_sb(const AV2_COMP *cpi, MACROBLOCK *x,
       IntraBCHashInfo *intrabc_hash_info = &x->intrabc_hash_info;
       int_mv best_mv, best_hash_mv;
 
-      int bestsme = av2_full_pixel_search(start_mv, &fullms_params, step_param,
-                                          NULL, &best_mv.as_fullmv, NULL);
-      int_mv best_subpel_mv;
-      FULLPEL_MV best_full_pel_mv = best_mv.as_fullmv;
-      best_subpel_mv.as_mv = get_mv_from_fullmv(&best_mv.as_fullmv);
-      int best_dist =
-          bestsme - av2_get_mv_err_cost(&best_subpel_mv.as_mv,
-                                        &fullms_params.mv_cost_params);
+      // The hash search sets mbmi->ref_bv, intrabc_drl_idx and intrabc_mode
+      // for its best match; keep them before the pixel search changes them.
+      int hashsme = INT_MAX;
+      int hash_intrabc_mode = 0;
+      int hash_intrabc_drl_idx = 0;
+      int_mv hash_ref_bv;
+      hash_ref_bv.as_int = 0;
+      const int hash_first = cpi->sf.mv_sf.intrabc_search_level >= 1;
+      const int try_hash = !cpi->sf.mv_sf.hash_max_8x8_intrabc_blocks ||
+                           bsize <= BLOCK_8X8;
+      if (hash_first && try_hash) {
+        hashsme = av2_intrabc_hash_search(cpi, xd, &fullms_params,
+                                          intrabc_hash_info,
+                                          &best_hash_mv.as_fullmv);
+        hash_intrabc_mode = mbmi->intrabc_mode;
+        hash_intrabc_drl_idx = mbmi->intrabc_drl_idx;
+        hash_ref_bv.as_mv = mbmi->ref_bv.as_mv;
+        if (hashsme != INT_MAX &&
+            !is_bv_valid(&best_hash_mv.as_fullmv, cm, xd, mi_row, mi_col,
+                         bsize, fullms_params))
+          hashsme = INT_MAX;
+      }
 
-      const int use_subpel_search =
-          bestsme < INT_MAX &&
-          !cpi->common.features.cur_frame_force_integer_mv &&
-          mbmi->pb_mv_precision > MV_PRECISION_ONE_PEL &&
-          is_bv_valid(&best_full_pel_mv, cm, xd, mi_row, mi_col, bsize,
-                      fullms_params);
-      if (use_subpel_search) {
-        int not_used = 0;
-
-        SUBPEL_MOTION_SEARCH_PARAMS sub_pel_ms_params;
-        av2_make_default_subpel_ms_params(&sub_pel_ms_params, cpi, x, bsize,
-                                          &dv_ref.as_mv, mbmi->pb_mv_precision,
-                                          1, NULL);
-        // TODO(yunqing): integrate this into
-        // av2_make_default_subpel_ms_params().
-        sub_pel_ms_params.forced_stop =
-            cpi->sf.mv_sf.simple_motion_subpel_force_stop;
-        av2_set_subpel_mv_search_range(&sub_pel_ms_params.mv_limits,
-                                       &fullms_params.mv_limits, &dv_ref.as_mv,
-                                       mbmi->pb_mv_precision);
-
-        MV subpel_start_mv = best_subpel_mv.as_mv;
-        assert(av2_is_subpelmv_in_range(&sub_pel_ms_params.mv_limits,
-                                        subpel_start_mv));
-
-        bestsme = av2_find_best_sub_pixel_intraBC_dv(
-            xd, cm, &sub_pel_ms_params, subpel_start_mv, &best_subpel_mv.as_mv,
-            &not_used, &x->pred_sse[COMPACT_INDEX0_NRS(ref_frame)],
-            &fullms_params.mv_limits, bsize);
-        best_dist =
+      // With a hash match, the pixel search is very unlikely to do better.
+      if (!hash_first || hashsme == INT_MAX) {
+        int bestsme = av2_full_pixel_search(start_mv, &fullms_params, step_param,
+                                            NULL, &best_mv.as_fullmv, NULL);
+        int_mv best_subpel_mv;
+        FULLPEL_MV best_full_pel_mv = best_mv.as_fullmv;
+        best_subpel_mv.as_mv = get_mv_from_fullmv(&best_mv.as_fullmv);
+        int best_dist =
             bestsme - av2_get_mv_err_cost(&best_subpel_mv.as_mv,
-                                          &sub_pel_ms_params.mv_cost_params);
-        best_full_pel_mv = get_fullmv_from_mv(&best_subpel_mv.as_mv);
-      }
+                                          &fullms_params.mv_cost_params);
 
-      if (bestsme != INT_MAX && is_bv_valid(&best_full_pel_mv, cm, xd, mi_row,
-                                            mi_col, bsize, fullms_params)) {
-        int cur_ref_bv_cost = bestsme;
-        int cur_intrabc_mode = 0;
-        int cur_intrabc_drl_idx = 0;
-        int_mv cur_ref_bv;
-        cur_ref_bv.as_mv = dv_ref.as_mv;
-        int_mv cur_bv;
-        cur_bv.as_mv = best_subpel_mv.as_mv;
-        int cur_dist = best_dist;
-        assert(cur_dist >= 0);
+        const int use_subpel_search =
+            bestsme < INT_MAX &&
+            !cpi->common.features.cur_frame_force_integer_mv &&
+            mbmi->pb_mv_precision > MV_PRECISION_ONE_PEL &&
+            is_bv_valid(&best_full_pel_mv, cm, xd, mi_row, mi_col, bsize,
+                        fullms_params);
+        if (use_subpel_search) {
+          int not_used = 0;
 
-        int cur_rate = av2_pick_ref_bv_subpel(cpi, bsize, best_subpel_mv.as_mv,
-                                              cm->features.max_bvp_drl_bits,
-                                              &fullms_params);
+          SUBPEL_MOTION_SEARCH_PARAMS sub_pel_ms_params;
+          av2_make_default_subpel_ms_params(&sub_pel_ms_params, cpi, x, bsize,
+                                            &dv_ref.as_mv, mbmi->pb_mv_precision,
+                                            1, NULL);
+          // TODO(yunqing): integrate this into
+          // av2_make_default_subpel_ms_params().
+          sub_pel_ms_params.forced_stop =
+              cpi->sf.mv_sf.simple_motion_subpel_force_stop;
+          av2_set_subpel_mv_search_range(&sub_pel_ms_params.mv_limits,
+                                         &fullms_params.mv_limits, &dv_ref.as_mv,
+                                         mbmi->pb_mv_precision);
 
-        if (cur_rate != INT_MAX) {
-          cur_ref_bv_cost = cur_dist + cur_rate;
-          cur_intrabc_mode = mbmi->intrabc_mode;
-          assert(cur_intrabc_mode == 0);
-          cur_intrabc_drl_idx = mbmi->intrabc_drl_idx;
-          cur_ref_bv = mbmi->ref_bv;
+          MV subpel_start_mv = best_subpel_mv.as_mv;
+          assert(av2_is_subpelmv_in_range(&sub_pel_ms_params.mv_limits,
+                                          subpel_start_mv));
+
+          bestsme = av2_find_best_sub_pixel_intraBC_dv(
+              xd, cm, &sub_pel_ms_params, subpel_start_mv, &best_subpel_mv.as_mv,
+              &not_used, &x->pred_sse[COMPACT_INDEX0_NRS(ref_frame)],
+              &fullms_params.mv_limits, bsize);
+          best_dist =
+              bestsme - av2_get_mv_err_cost(&best_subpel_mv.as_mv,
+                                            &sub_pel_ms_params.mv_cost_params);
+          best_full_pel_mv = get_fullmv_from_mv(&best_subpel_mv.as_mv);
         }
 
-        if (cur_ref_bv_cost < best_ref_bv_cost) {
-          best_ref_bv_cost = cur_ref_bv_cost;
-          best_intrabc_mode = cur_intrabc_mode;
-          best_intrabc_drl_idx = cur_intrabc_drl_idx;
-          best_ref_bv = cur_ref_bv;
-          best_bv.as_mv = cur_bv.as_mv;
+        if (bestsme != INT_MAX && is_bv_valid(&best_full_pel_mv, cm, xd, mi_row,
+                                              mi_col, bsize, fullms_params)) {
+          int cur_ref_bv_cost = bestsme;
+          int cur_intrabc_mode = 0;
+          int cur_intrabc_drl_idx = 0;
+          int_mv cur_ref_bv;
+          cur_ref_bv.as_mv = dv_ref.as_mv;
+          int_mv cur_bv;
+          cur_bv.as_mv = best_subpel_mv.as_mv;
+          int cur_dist = best_dist;
+          assert(cur_dist >= 0);
+
+          int cur_rate = av2_pick_ref_bv_subpel(cpi, bsize, best_subpel_mv.as_mv,
+                                                cm->features.max_bvp_drl_bits,
+                                                &fullms_params);
+
+          if (cur_rate != INT_MAX) {
+            cur_ref_bv_cost = cur_dist + cur_rate;
+            cur_intrabc_mode = mbmi->intrabc_mode;
+            assert(cur_intrabc_mode == 0);
+            cur_intrabc_drl_idx = mbmi->intrabc_drl_idx;
+            cur_ref_bv = mbmi->ref_bv;
+          }
+
+          if (cur_ref_bv_cost < best_ref_bv_cost) {
+            best_ref_bv_cost = cur_ref_bv_cost;
+            best_intrabc_mode = cur_intrabc_mode;
+            best_intrabc_drl_idx = cur_intrabc_drl_idx;
+            best_ref_bv = cur_ref_bv;
+            best_bv.as_mv = cur_bv.as_mv;
+          }
         }
       }
 
-      const int hashsme = av2_intrabc_hash_search(
-          cpi, xd, &fullms_params, intrabc_hash_info, &best_hash_mv.as_fullmv);
+      if (!hash_first && try_hash) {
+        hashsme = av2_intrabc_hash_search(cpi, xd, &fullms_params,
+                                          intrabc_hash_info,
+                                          &best_hash_mv.as_fullmv);
+        hash_intrabc_mode = mbmi->intrabc_mode;
+        hash_intrabc_drl_idx = mbmi->intrabc_drl_idx;
+        hash_ref_bv.as_mv = mbmi->ref_bv.as_mv;
+      }
 
       if (hashsme != INT_MAX &&
           is_bv_valid(&best_hash_mv.as_fullmv, cm, xd, mi_row, mi_col, bsize,
                       fullms_params)) {
         int cur_ref_bv_cost = hashsme;
 
-        int cur_intrabc_mode = mbmi->intrabc_mode;
-        int cur_intrabc_drl_idx = mbmi->intrabc_drl_idx;
+        int cur_intrabc_mode = hash_intrabc_mode;
+        int cur_intrabc_drl_idx = hash_intrabc_drl_idx;
 
         int_mv cur_ref_bv;
-        cur_ref_bv.as_mv = mbmi->ref_bv.as_mv;
+        cur_ref_bv.as_mv = hash_ref_bv.as_mv;
 
         int_mv cur_bv;
         cur_bv.as_mv = get_mv_from_fullmv(&best_hash_mv.as_fullmv);

@@ -2701,9 +2701,12 @@ int av2_intrabc_hash_search(const AV2_COMP *cpi, const MACROBLOCKD *xd,
   av2_get_block_hash_value(intrabc_hash_info, src, src_stride, block_width,
                            &hash_value1, &hash_value2);
 
-  const int count = av2_hash_table_count(ref_frame_hash, hash_value1);
+  int count = av2_hash_table_count(ref_frame_hash, hash_value1);
   if (count <= 1) {
     return INT_MAX;
+  }
+  if (cpi->sf.mv_sf.prune_intrabc_candidate_block_hash_search) {
+    count = AVMMIN(64, count);
   }
 
   Iterator iterator = av2_hash_get_first_iterator(ref_frame_hash, hash_value1);

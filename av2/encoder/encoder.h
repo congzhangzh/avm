@@ -3359,6 +3359,11 @@ static INLINE int frame_is_kf_gf_arf(const AV2_COMP *cpi) {
 // TODO(huisu@google.com, youzhou@microsoft.com): enable hash-me for HBD.
 static INLINE int av2_use_hash_me(const AV2_COMP *const cpi) {
   if (!cpi->common.features.is_scc_content_by_detector) return 0;
+  // A frame-wide hash table costs more than local intraBC gains in inter
+  // frames; their intraBC uses the pixel search alone.
+  if (cpi->sf.mv_sf.intrabc_search_level >= 1 &&
+      !frame_is_intra_only(&cpi->common))
+    return 0;
   return (cpi->common.features.allow_intrabc) &&
          (frame_is_intra_only(&cpi->common) ||
           cpi->common.features.allow_local_intrabc);

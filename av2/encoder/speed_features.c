@@ -661,6 +661,11 @@ static void set_rt_speed_features_framesize_independent(
     sf->rt_sf.use_only_dc_intra_interframe = true;
     sf->winner_mode_sf.tx_size_search_level = USE_LARGESTALL;
   }
+  if (speed >= 7) {
+    sf->mv_sf.prune_intrabc_candidate_block_hash_search = 1;
+    sf->mv_sf.hash_max_8x8_intrabc_blocks = 1;
+    sf->mv_sf.intrabc_search_level = 1;
+  }
 }
 
 static AVM_INLINE void init_hl_sf(HIGH_LEVEL_SPEED_FEATURES *hl_sf) {
@@ -768,6 +773,9 @@ static AVM_INLINE void init_mv_sf(MV_SPEED_FEATURES *mv_sf) {
   mv_sf->warp_search_method = WARP_SEARCH_SQUARE;
   mv_sf->warp_search_iters = 8;
   mv_sf->fast_motion_estimation_on_block_256 = 0;
+  mv_sf->prune_intrabc_candidate_block_hash_search = 0;
+  mv_sf->hash_max_8x8_intrabc_blocks = 0;
+  mv_sf->intrabc_search_level = 0;
 }
 
 static AVM_INLINE void init_flexmv_sf(
