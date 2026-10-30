@@ -2892,6 +2892,10 @@ typedef struct AV2_COMP {
    * The last answer of av2_is_integer_mv().
    */
   int rt_integer_mv;
+  /*!
+   * Set once the intraBC DV costs have been filled.
+   */
+  int dv_costs_filled;
 
 #if CONFIG_COLLECT_PARTITION_STATS == 2
   /*!

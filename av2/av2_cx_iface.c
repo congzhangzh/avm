@@ -1251,11 +1251,14 @@ static double get_modeled_qp_offset(int qp, int level, int bit_depth,
 // 720p screen and camera content at a fixed QP, one thread: speed 9 encodes
 // 4-7x faster than speed 9 with every tool, for 2-11 % more bits.
 //   7: the loop-filter searches (CCSO, loop restoration, GDF).
-//   8: also warped and global motion, the MV coding tools, and cost tables
-//      updated once per tile instead of per superblock.
+//   8: also warped and global motion, the MV coding tools; coefficient and
+//      mode costs updated once per tile instead of per superblock, MV and DV
+//      costs every 8th frame; at most 3 reference frames.
 //   9: also TIP, optical flow and MV refinement, masked / inter-intra /
 //      one-sided compound, the newer intra and transform tools and the
-//      extended partitions.
+//      extended partitions; reduced transform set 1 (inter: DCT and identity,
+//      intra: DCT and ADST; set 2 trips an assert upstream) and
+//      no trellis.
 static void set_rt_tool_set(struct av2_extracfg *extra_cfg) {
   const int speed = extra_cfg->cpu_used;
   if (speed >= 7) {
@@ -1273,7 +1276,9 @@ static void set_rt_tool_set(struct av2_extracfg *extra_cfg) {
     extra_cfg->enable_joint_mvd = 0;
     extra_cfg->coeff_cost_upd_freq = COST_UPD_TILE;
     extra_cfg->mode_cost_upd_freq = COST_UPD_TILE;
-    extra_cfg->mv_cost_upd_freq = COST_UPD_TILE;
+    extra_cfg->mv_cost_upd_freq = COST_UPD_OFF;
+    extra_cfg->max_reference_frames =
+        AVMMIN(extra_cfg->max_reference_frames, 3);
   }
   if (speed >= 9) {
     extra_cfg->enable_tip = 0;
@@ -1294,6 +1299,8 @@ static void set_rt_tool_set(struct av2_extracfg *extra_cfg) {
     extra_cfg->enable_inter_ddt = 0;
     extra_cfg->enable_ext_partitions = 0;
     extra_cfg->enable_uneven_4way_partitions = 0;
+    if (extra_cfg->reduced_tx_type_set == 0) extra_cfg->reduced_tx_type_set = 1;
+    extra_cfg->enable_trellis_quant = 0;
   }
 }
 
@@ -1889,7 +1896,8 @@ static avm_codec_err_t set_encoder_config(AV2EncoderConfig *oxcf,
 
   if (extra_cfg != caller_extra_cfg) {
     caller_extra_cfg->lossless = extra_cfg->lossless;
-    caller_extra_cfg->max_reference_frames = extra_cfg->max_reference_frames;
+    caller_extra_cfg->max_reference_frames = AVMMIN(
+        caller_extra_cfg->max_reference_frames, caller_extra_cfg->dpb_size);
   }
   if (update_config) {
     update_encoder_config(&cfg->encoder_cfg, caller_extra_cfg);
