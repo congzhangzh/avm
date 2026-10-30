@@ -139,4 +139,59 @@ TEST_P(RtcTest, RtcTest) {
 }
 
 AV2_INSTANTIATE_TEST_SUITE(RtcTest, ::testing::Range(0, 2));
+
+// Realtime encoding with the encoder's own tool set at each realtime speed:
+// only the usage and the speed are set, so the tools RtcTest turns off (SDP
+// among them) are exercised, and every frame must decode.
+class RtcDefaultToolsTest
+    : public ::libavm_test::CodecTestWith2Params<int, int>,
+      public ::libavm_test::EncoderTest {
+ protected:
+  RtcDefaultToolsTest()
+      : EncoderTest(GET_PARAM(0)), tune_content_(GET_PARAM(1)),
+        speed_(GET_PARAM(2)) {}
+  virtual ~RtcDefaultToolsTest() {}
+
+  virtual void SetUp() {
+    const avm_codec_err_t res =
+        codec_->DefaultEncoderConfig(&cfg_, AVM_USAGE_REALTIME);
+    ASSERT_EQ(AVM_CODEC_OK, res);
+    passes_ = 1;
+    cfg_.g_usage = AVM_USAGE_REALTIME;
+    const avm_rational timebase = { 1, 30 };
+    cfg_.g_timebase = timebase;
+    cfg_.rc_end_usage = AVM_Q;
+    cfg_.rc_min_quantizer = 160;
+    cfg_.rc_max_quantizer = 160;
+    cfg_.g_threads = 1;
+    cfg_.g_lag_in_frames = 0;
+  }
+
+  virtual bool DoDecode() const { return true; }
+
+  virtual void PreEncodeFrameHook(::libavm_test::VideoSource *video,
+                                  ::libavm_test::Encoder *encoder) {
+    if (video->frame() == 0) {
+      encoder->Control(AV2E_SET_TUNE_CONTENT, tune_content_);
+      encoder->Control(AVME_SET_CPUUSED, speed_);
+    }
+  }
+
+  virtual bool HandleDecodeResult(const avm_codec_err_t res_dec,
+                                  libavm_test::Decoder *decoder) {
+    EXPECT_EQ(AVM_CODEC_OK, res_dec) << decoder->DecodeError();
+    return AVM_CODEC_OK == res_dec;
+  }
+
+  int tune_content_;
+  int speed_;
+};
+
+TEST_P(RtcDefaultToolsTest, DecodesCleanly) {
+  ::libavm_test::Y4mVideoSource video("niklas_1280_720_30.y4m", 0, 6);
+  ASSERT_NO_FATAL_FAILURE(RunLoop(&video));
+}
+
+AV2_INSTANTIATE_TEST_SUITE(RtcDefaultToolsTest, ::testing::Range(0, 2),
+                           ::testing::Range(6, 10));
 }  // namespace

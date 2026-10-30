@@ -2053,6 +2053,40 @@ static void encode_sb(const AV2_COMP *const cpi, ThreadData *td,
   update_ext_partition_context(xd, mi_row, mi_col, subsize, bsize, partition);
 }
 
+// Fills in what a node of a preset partition tree carries besides its
+// partition, as encode_sb() and the decoder derive it from the parent: the
+// position and size, the region type, the extended SDP permission and the
+// chroma reference. The bitstream writer reads these: region_type is
+// signalled only where extended_sdp_allowed_flag is set, so a node left
+// zeroed makes the writer skip a symbol the decoder reads.
+static void init_preset_ptree_node(const AV2_COMMON *const cm,
+                                   TREE_TYPE tree_type, int mi_row, int mi_col,
+                                   BLOCK_SIZE bsize, PARTITION_TREE *ptree) {
+  const PARTITION_TREE *parent = ptree->parent;
+  ptree->bsize = bsize;
+  ptree->mi_row = mi_row;
+  ptree->mi_col = mi_col;
+  if (parent) {
+    ptree->region_type = parent->region_type;
+    ptree->extended_sdp_allowed_flag =
+        parent->extended_sdp_allowed_flag
+            ? is_extended_sdp_allowed(cm->seq_params.enable_extended_sdp,
+                                      parent->bsize, parent->partition)
+            : 0;
+  } else {
+    ptree->region_type =
+        frame_is_intra_only(cm) ? INTRA_REGION : MIXED_INTER_INTRA_REGION;
+    ptree->extended_sdp_allowed_flag = 1;
+  }
+  set_chroma_ref_info(tree_type, mi_row, mi_col, ptree->index, bsize,
+                      &ptree->chroma_ref_info,
+                      parent ? &parent->chroma_ref_info : NULL,
+                      parent ? parent->bsize : BLOCK_INVALID,
+                      parent ? parent->partition : PARTITION_NONE,
+                      cm->seq_params.subsampling_x,
+                      cm->seq_params.subsampling_y);
+}
+
 static void build_one_split_tree(AV2_COMMON *const cm, TREE_TYPE tree_type,
                                  int mi_row, int mi_col, BLOCK_SIZE bsize,
                                  PARTITION_TREE *ptree,
@@ -2070,14 +2104,9 @@ static void build_one_split_tree(AV2_COMMON *const cm, TREE_TYPE tree_type,
 
   const int ss_x = cm->seq_params.subsampling_x;
   const int ss_y = cm->seq_params.subsampling_y;
-  ptree->bsize = bsize;
 
   PARTITION_TREE *parent = ptree->parent;
-  set_chroma_ref_info(tree_type, mi_row, mi_col, ptree->index, bsize,
-                      &ptree->chroma_ref_info,
-                      parent ? &parent->chroma_ref_info : NULL,
-                      parent ? parent->bsize : BLOCK_INVALID,
-                      parent ? parent->partition : PARTITION_NONE, ss_x, ss_y);
+  init_preset_ptree_node(cm, tree_type, mi_row, mi_col, bsize, ptree);
 
   if (bsize == BLOCK_4X4) {
     ptree->partition = PARTITION_NONE;
@@ -2210,13 +2239,24 @@ static void build_one_split_tree(AV2_COMMON *const cm, TREE_TYPE tree_type,
   }
 #endif  // NDEBUG
 
+  // The two rectangular halves are nodes of their own, with this node as
+  // parent and the square quarters as their children, as in the decoder.
+  const BLOCK_SIZE rect_bsize = subsize_lookup[first_partition][bsize];
+  init_preset_ptree_node(cm, tree_type, mi_row, mi_col, rect_bsize,
+                         ptree->sub_tree[0]);
+  init_preset_ptree_node(
+      cm, tree_type,
+      (first_partition == PARTITION_HORZ) ? mi_row + hbs_h : mi_row,
+      (first_partition == PARTITION_VERT) ? mi_col + hbs_w : mi_col,
+      rect_bsize, ptree->sub_tree[1]);
+
   ptree->sub_tree[0]->partition = second_partition;
-  ptree->sub_tree[0]->sub_tree[0] = av2_alloc_ptree_node(ptree, 0);
-  ptree->sub_tree[0]->sub_tree[1] = av2_alloc_ptree_node(ptree, 1);
+  ptree->sub_tree[0]->sub_tree[0] = av2_alloc_ptree_node(ptree->sub_tree[0], 0);
+  ptree->sub_tree[0]->sub_tree[1] = av2_alloc_ptree_node(ptree->sub_tree[0], 1);
 
   ptree->sub_tree[1]->partition = second_partition;
-  ptree->sub_tree[1]->sub_tree[0] = av2_alloc_ptree_node(ptree, 0);
-  ptree->sub_tree[1]->sub_tree[1] = av2_alloc_ptree_node(ptree, 1);
+  ptree->sub_tree[1]->sub_tree[0] = av2_alloc_ptree_node(ptree->sub_tree[1], 0);
+  ptree->sub_tree[1]->sub_tree[1] = av2_alloc_ptree_node(ptree->sub_tree[1], 1);
 
   const int track_subtree0_luma =
       track_ptree_luma && is_luma_chroma_share_same_partition(
@@ -2500,18 +2540,27 @@ void av2_nonrd_use_partition(AV2_COMP *cpi, ThreadData *td,
     ptree->is_cfl_allowed_for_this_chroma_partition = CFL_DISALLOWED_FOR_CHROMA;
   }
 
-  if (partition == PARTITION_NONE) {
-    xd->is_cfl_allowed_in_sdp =
-        pc_tree->is_cfl_allowed_for_this_chroma |
-        ptree->is_cfl_allowed_for_this_chroma_partition |
-        is_cfl_allowed_for_sdp(cm, xd, ptree_luma, partition, bsize);
+  // Derive whether CfL is allowed for the chroma of this partition the same
+  // way encode_sb() and the decoder do: OR in this level, then hand the result
+  // down to the sub-trees. The bitstream writer reads it from ptree, so it
+  // must be propagated here too, or the CfL flag is read for blocks it was
+  // not written for.
+  ptree->is_cfl_allowed_for_this_chroma_partition |=
+      is_cfl_allowed_for_sdp(cm, xd, ptree_luma, partition, bsize);
+  CFL_ALLOWED_FOR_SDP_TYPE is_cfl_allowed_in_sdp =
+      ptree->is_cfl_allowed_for_this_chroma_partition;
+  if (!cm->seq_params.enable_cfl_intra && !cm->seq_params.enable_mhccp)
+    is_cfl_allowed_in_sdp = CFL_DISALLOWED_FOR_CHROMA;
+  pc_tree->is_cfl_allowed_for_this_chroma = is_cfl_allowed_in_sdp;
 
+  if (partition == PARTITION_NONE) {
+    xd->is_cfl_allowed_in_sdp = is_cfl_allowed_in_sdp;
   } else {
-    pc_tree->is_cfl_allowed_for_this_chroma =
-        ((pc_tree->parent) ? pc_tree->parent->is_cfl_allowed_for_this_chroma
-                           : 0) |
-        is_cfl_allowed_for_sdp(cm, xd, ptree_luma, partition, bsize);
-    ptree->is_cfl_allowed_for_this_chroma_partition = CFL_DISALLOWED_FOR_CHROMA;
+    for (int i = 0; i < 4; ++i) {
+      if (ptree->sub_tree[i])
+        ptree->sub_tree[i]->is_cfl_allowed_for_this_chroma_partition =
+            is_cfl_allowed_in_sdp;
+    }
   }
 
   switch (partition) {
