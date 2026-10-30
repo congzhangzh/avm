@@ -1265,6 +1265,11 @@ static void set_rt_tool_set(struct av2_extracfg *extra_cfg) {
     extra_cfg->enable_ccso = 0;
     extra_cfg->enable_restoration = 0;
     extra_cfg->enable_gdf = 0;
+    // CDEF on blocks without residual filters static content again in every
+    // frame, so it never matches its source and has to be coded again: on
+    // 1440p screen content that was ~60 % of the inter frames' work, and it
+    // cost scrolling text 1.1 dB.
+    extra_cfg->enable_cdef_on_skip_txfm = CDEF_ON_SKIP_TXFM_DISABLED;
   }
   if (speed >= 8) {
     extra_cfg->enable_warped_motion = 0;
