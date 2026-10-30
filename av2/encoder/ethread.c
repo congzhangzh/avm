@@ -1142,8 +1142,10 @@ static int motion_field_worker_hook(void *arg1, void *arg2) {
   const MotionFieldJob *const job = (const MotionFieldJob *)arg1;
   for (int band = (int)(intptr_t)arg2; band < job->num_bands;
        band += job->num_workers) {
-    av2_project_motion_field_rows(job->cm, job->plan, band * job->band_rows,
-                                  (band + 1) * job->band_rows);
+    const int row_start = band * job->band_rows;
+    const int row_end = (band + 1) * job->band_rows;
+    av2_init_motion_field_rows(job->cm, row_start, row_end);
+    av2_project_motion_field_rows(job->cm, job->plan, row_start, row_end);
   }
   return 1;
 }
@@ -1152,15 +1154,22 @@ void av2_setup_motion_field_mt(AV2_COMP *cpi) {
   AV2_COMMON *const cm = &cpi->common;
   MultiThreadInfo *const mt_info = &cpi->mt_info;
   const int num_workers = mt_info->workers ? mt_info->num_workers : 1;
+  if (cm->seq_params.order_hint_info.order_hint_bits_minus_1 < 0) return;
   MotionFieldPlan plan;
-  if (!av2_plan_motion_field(cm, &plan)) return;
+  if (!av2_plan_motion_field(cm, &plan)) {
+    av2_init_motion_field_rows(cm, 0, INT_MAX);
+    return;
+  }
   const int band_rows = av2_motion_field_band_rows(cm);
   const int mvs_rows =
       ROUND_POWER_OF_TWO(cm->mi_params.mi_rows, TMVP_SHIFT_BITS);
   const int num_bands = (mvs_rows + band_rows - 1) / band_rows;
   if (num_workers <= 1 || num_bands <= 1 || plan.count == 0) {
+    av2_init_motion_field_rows(cm, 0, INT_MAX);
     av2_project_motion_field_rows(cm, &plan, 0, INT_MAX);
   } else {
+    // Each band's rows are initialised by the worker that projects into
+    // them, just before it does: projections never leave their band.
     const int n = AVMMIN(num_workers, num_bands);
     const MotionFieldJob job = { cm, &plan, band_rows, num_bands, n };
     const AVxWorkerInterface *const winterface = avm_get_worker_interface();

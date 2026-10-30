@@ -3809,29 +3809,21 @@ static void fill_id_offset_sample_gap(AV2_COMMON *cm) {
   }
 }
 
-int av2_plan_motion_field(AV2_COMMON *cm, MotionFieldPlan *plan) {
-  const OrderHintInfo *const order_hint_info = &cm->seq_params.order_hint_info;
-
-  plan->count = 0;
-  if (order_hint_info->order_hint_bits_minus_1 < 0) return 0;
-
-  TPL_MV_REF *tpl_mvs_base = cm->tpl_mvs;
+void av2_init_motion_field_rows(AV2_COMMON *cm, int row_start, int row_end) {
   const int mvs_rows =
       ROUND_POWER_OF_TWO(cm->mi_params.mi_rows, TMVP_SHIFT_BITS);
   const int mvs_cols =
       ROUND_POWER_OF_TWO(cm->mi_params.mi_cols, TMVP_SHIFT_BITS);
-  int size = mvs_rows * mvs_cols;
-  for (int idx = 0; idx < size; ++idx) {
+  const int start = row_start * mvs_cols;
+  const int end = AVMMIN(row_end, mvs_rows) * mvs_cols;
+  TPL_MV_REF *tpl_mvs_base = cm->tpl_mvs;
+  for (int idx = start; idx < end; ++idx) {
     tpl_mvs_base[idx].mfmv0.as_int = INVALID_MV;
     tpl_mvs_base[idx].ref_frame_offset = 0;
   }
-
-  cm->has_both_sides_refs = (cm->ref_frames_info.num_future_refs > 0) &&
-                            (cm->ref_frames_info.num_past_refs > 0);
-
   if (cm->seq_params.enable_mv_traj) {
     for (int rf = 0; rf < INTER_REFS_PER_FRAME; rf++) {
-      for (int i = 0; i < mvs_rows * mvs_cols; i++) {
+      for (int i = start; i < end; i++) {
         cm->id_offset_map[rf][i].as_int = INVALID_MV;
         for (int k = 0; k < 3; k++) {
           cm->blk_id_map[k][rf][i].as_int = INVALID_MV;
@@ -3839,6 +3831,16 @@ int av2_plan_motion_field(AV2_COMMON *cm, MotionFieldPlan *plan) {
       }
     }
   }
+}
+
+int av2_plan_motion_field(AV2_COMMON *cm, MotionFieldPlan *plan) {
+  const OrderHintInfo *const order_hint_info = &cm->seq_params.order_hint_info;
+
+  plan->count = 0;
+  if (order_hint_info->order_hint_bits_minus_1 < 0) return 0;
+
+  cm->has_both_sides_refs = (cm->ref_frames_info.num_future_refs > 0) &&
+                            (cm->ref_frames_info.num_past_refs > 0);
 
   // Find the sorted map of refs.
   int sort_ref[INTER_REFS_PER_FRAME] = { 0, 1, 2, 3, 4, 5, 6 };
@@ -4077,6 +4079,8 @@ void av2_finish_motion_field(AV2_COMMON *cm) {
 }
 
 void av2_setup_motion_field(AV2_COMMON *cm) {
+  if (cm->seq_params.order_hint_info.order_hint_bits_minus_1 < 0) return;
+  av2_init_motion_field_rows(cm, 0, INT_MAX);
   MotionFieldPlan plan;
   if (!av2_plan_motion_field(cm, &plan)) return;
   av2_project_motion_field_rows(cm, &plan, 0, INT_MAX);

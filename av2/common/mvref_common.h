@@ -521,6 +521,10 @@ typedef struct MotionFieldPlan {
   int count;
 } MotionFieldPlan;
 
+// Sets the motion field of rows [row_start, row_end) to "no projection";
+// av2_setup_motion_field() does this for the whole frame first, even when
+// there is nothing to project.
+void av2_init_motion_field_rows(AV2_COMMON *cm, int row_start, int row_end);
 // Returns 0 when there is nothing to project.
 int av2_plan_motion_field(AV2_COMMON *cm, MotionFieldPlan *plan);
 int av2_motion_field_band_rows(const AV2_COMMON *cm);
