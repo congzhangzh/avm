@@ -142,6 +142,17 @@ static AVM_INLINE void release_compound_type_rd_buffers(
   av2_zero(*bufs);  // Set all pointers to NULL for safety.
 }
 
+// Frees the CDEF buffers and sync made for several workers, if any.
+static AVM_INLINE void av2_free_encoder_cdef_mt(AV2_COMP *cpi) {
+  MultiThreadInfo *const mt_info = &cpi->mt_info;
+  if (mt_info->cdef_worker == NULL) return;
+  av2_free_cdef_buffers(&cpi->common, &mt_info->cdef_worker,
+                        &mt_info->cdef_sync,
+                        cpi->common.cdef_info.allocated_num_workers);
+  av2_free_cdef_sync(&mt_info->cdef_sync);
+  mt_info->cdef_sync.mutex_ = NULL;
+}
+
 static AVM_INLINE void dealloc_compressor_data(AV2_COMP *cpi) {
   AV2_COMMON *const cm = &cpi->common;
   TokenInfo *token_info = &cpi->token_info;
@@ -219,6 +230,7 @@ static AVM_INLINE void dealloc_compressor_data(AV2_COMP *cpi) {
   free_gdf_buffers(&cm->gdf_info);
   const int use_cdef = cpi->oxcf.tool_cfg.enable_cdef;
   if (!is_stat_generation_stage(cpi) && use_cdef) {
+    av2_free_encoder_cdef_mt(cpi);
     AV2CdefWorkerData *cdef_worker = NULL;
     AV2CdefSync cdef_sync = { 0 };
     av2_free_cdef_buffers(cm, &cdef_worker /* dummy */, &cdef_sync /* dummy */,

@@ -2715,6 +2715,8 @@ void av2_set_frame_size(AV2_COMP *cpi, int width, int height) {
   // be changed to 0 when encoding the frame for single_picture_header_flag.
   const int use_cdef = cpi->oxcf.tool_cfg.enable_cdef;
   if (!is_stat_generation_stage(cpi) && use_cdef) {
+    // Buffers sized for the CDEF workers are made again for the new size.
+    av2_free_encoder_cdef_mt(cpi);
     AV2CdefWorkerData *cdef_worker = NULL;
     AV2CdefSync cdef_sync = { 0 };
     av2_alloc_cdef_buffers(cm, &cdef_worker /* dummy */, &cdef_sync /* dummy */,
@@ -3165,9 +3167,19 @@ static void cdef_restoration_frame(AV2_COMP *cpi, AV2_COMMON *cm,
 #endif  // CONFIG_ENTROPY_STATS
                     cpi->sf.lpf_sf.cdef_pick_method, cpi->td.mb.rdmult);
 
-    // Apply the filter
-    if (cm->cdef_info.cdef_frame_enable)
-      av2_cdef_frame(&cm->cur_frame->buf, cm, xd, av2_cdef_init_fb_row);
+    // Apply the filter, on the encoder's workers as the decoder does.
+    if (cm->cdef_info.cdef_frame_enable) {
+      if (num_workers > 1 && !cm->seq_params.disable_loopfilters_across_tiles) {
+        av2_alloc_cdef_buffers(cm, &mt_info->cdef_worker, &mt_info->cdef_sync,
+                               num_workers);
+        av2_alloc_cdef_sync(cm, &mt_info->cdef_sync, num_workers);
+        av2_cdef_frame_mt(cm, xd, mt_info->cdef_worker, mt_info->workers,
+                          &mt_info->cdef_sync, num_workers,
+                          av2_cdef_init_fb_row_mt);
+      } else {
+        av2_cdef_frame(&cm->cur_frame->buf, cm, xd, av2_cdef_init_fb_row);
+      }
+    }
 
 #if CONFIG_MISMATCH_DEBUG
     mismatch_record_frame(&cm->cur_frame->buf, num_planes, 1);

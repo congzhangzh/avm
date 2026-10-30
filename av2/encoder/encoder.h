@@ -1868,6 +1868,15 @@ typedef struct {
   AV2LfSync lf_row_sync;
 
   /*!
+   * CDEF multi-threading: per-worker buffers and the row sync.
+   */
+  AV2CdefWorkerData *cdef_worker;
+  /*!
+   * CDEF multi-threading sync object.
+   */
+  AV2CdefSync cdef_sync;
+
+  /*!
    * Loop Restoration multi-threading object.
    */
   AV2LrSync lr_row_sync;
