@@ -466,7 +466,7 @@ static INLINE void init_encode_rd_sb(AV2_COMP *cpi, ThreadData *td,
   }
 
   // Reset hash state for transform/mode rd hash information
-  reset_hash_records(&x->txfm_search_info, cpi->sf.tx_sf.use_inter_txb_hash);
+  reset_hash_records(&x->txfm_search_info);
   av2_zero(x->picked_ref_frames_mask);
   av2_invalid_rd_stats(rd_cost);
   if (sf->part_sf.partition_search_type != VAR_BASED_PARTITION &&

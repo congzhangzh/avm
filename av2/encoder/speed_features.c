@@ -877,7 +877,6 @@ static AVM_INLINE void init_tx_sf(TX_SPEED_FEATURES *tx_sf) {
   tx_sf->txb_split_cap = 1;
   tx_sf->adaptive_tx_type_search_idx = 0;
   tx_sf->adaptive_tx_partition_type_search_idx = 0;
-  tx_sf->use_inter_txb_hash = 1;
   tx_sf->prune_tx_rd_eval_sec_tx_sse = false;
   tx_sf->use_largest_tx_size_for_small_bsize = false;
   tx_sf->restrict_tx_partition_type_search = 0;

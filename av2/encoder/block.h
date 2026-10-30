@@ -782,13 +782,6 @@ typedef struct {
   int eval_mode_type;
 } TxfmSearchParams;
 
-/*!\cond */
-#define MAX_NUM_8X8_TXBS ((MAX_MIB_SIZE >> 1) * (MAX_MIB_SIZE >> 1))
-#define MAX_NUM_16X16_TXBS ((MAX_MIB_SIZE >> 2) * (MAX_MIB_SIZE >> 2))
-#define MAX_NUM_32X32_TXBS ((MAX_MIB_SIZE >> 3) * (MAX_MIB_SIZE >> 3))
-#define MAX_NUM_64X64_TXBS ((MAX_MIB_SIZE >> 4) * (MAX_MIB_SIZE >> 4))
-/*!\endcond */
-
 /*! \brief Stores various encoding/search decisions related to txfm search.
  *
  * This struct contains a cache of previous txfm results, and some buffers for
@@ -837,14 +830,6 @@ typedef struct {
   //! Txfm hash record for the whole coding block.
   MB_RD_RECORD mb_rd_record;
 
-  //! Inter mode txfm hash record for TX_8X8 blocks.
-  TXB_RD_RECORD txb_rd_record_8X8[MAX_NUM_8X8_TXBS];
-  //! Inter mode txfm hash record for TX_16X16 blocks.
-  TXB_RD_RECORD txb_rd_record_16X16[MAX_NUM_16X16_TXBS];
-  //! Inter mode txfm hash record for TX_32X32 blocks.
-  TXB_RD_RECORD txb_rd_record_32X32[MAX_NUM_32X32_TXBS];
-  //! Inter mode txfm hash record for TX_64X64 blocks.
-  TXB_RD_RECORD txb_rd_record_64X64[MAX_NUM_64X64_TXBS];
   //! Intra mode txfm hash record for square tx blocks.
   TXB_RD_RECORD txb_rd_record_intra;
   /**@}*/
@@ -865,10 +850,6 @@ typedef struct {
   unsigned int tx_search_count;
 #endif  // CONFIG_SPEED_STATS
 } TxfmSearchInfo;
-#undef MAX_NUM_8X8_TXBS
-#undef MAX_NUM_16X16_TXBS
-#undef MAX_NUM_32X32_TXBS
-#undef MAX_NUM_64X64_TXBS
 
 /*! \brief Holds the entropy costs for various modes sent to the bitstream.
  *
