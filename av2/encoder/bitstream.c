@@ -6109,6 +6109,11 @@ static uint32_t write_tilegroup_payload(AV2_COMP *const cpi, uint8_t *const dst,
       int num_filter_classes[MAX_MB_PLANE];
       for (int p = 0; p < num_planes; ++p)
         num_filter_classes[p] = cm->rst_info[p].num_filter_classes;
+      // The Wiener bank defaults depend on the base qindex. The decoder sets
+      // it at the start of every tile, whether delta q is on or not; do the
+      // same here, or a frame without delta q starts the bank from the
+      // qindex of an earlier frame.
+      cpi->td.mb.e_mbd.current_base_qindex = cm->quant_params.base_qindex;
       av2_reset_loop_restoration(&cpi->td.mb.e_mbd, 0, num_planes,
                                  num_filter_classes);
       tile_info.tile_active_mode = this_tile->tile_info.tile_active_mode;
