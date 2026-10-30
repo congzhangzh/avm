@@ -361,7 +361,7 @@ void av2_restore_sb_state(const SB_FIRST_PASS_STATS *sb_fp_stats, AV2_COMP *cpi,
                           int mi_col);
 
 void av2_set_cost_upd_freq(AV2_COMP *cpi, ThreadData *td,
-                           const TileInfo *const tile_info, const int mi_row,
+                           TileDataEnc *tile_data, const int mi_row,
                            const int mi_col);
 
 #ifndef NDEBUG

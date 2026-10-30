@@ -1468,7 +1468,7 @@ static AVM_INLINE void encode_sb_row(AV2_COMP *cpi, ThreadData *td,
     }
 
     // Update the rate cost tables for some symbols
-    av2_set_cost_upd_freq(cpi, td, tile_info, mi_row, mi_col);
+    av2_set_cost_upd_freq(cpi, td, tile_data, mi_row, mi_col);
 
     xd->cur_frame_force_integer_mv = cm->features.cur_frame_force_integer_mv;
     x->source_variance = UINT_MAX;

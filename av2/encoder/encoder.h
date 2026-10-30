@@ -1747,6 +1747,9 @@ typedef struct ThreadData {
   void *partition_model;
 #endif  // CONFIG_ML_PART_SPLIT
   void *dip_pruning_model;
+  // Row multi-threading with per-tile cost updates: the frame and tile whose
+  // starting contexts this thread's cost tables were last filled from.
+  uint64_t tile_costs_key;
 } ThreadData;
 
 struct EncWorkerData;

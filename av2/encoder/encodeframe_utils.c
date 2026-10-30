@@ -1212,15 +1212,37 @@ void av2_restore_sb_state(const SB_FIRST_PASS_STATS *sb_fp_stats, AV2_COMP *cpi,
 // Update the rate costs of some symbols according to the frequency directed
 // by speed features
 void av2_set_cost_upd_freq(AV2_COMP *cpi, ThreadData *td,
-                           const TileInfo *const tile_info, const int mi_row,
+                           TileDataEnc *tile_data, const int mi_row,
                            const int mi_col) {
   AV2_COMMON *const cm = &cpi->common;
   const int num_planes = av2_num_planes(cm);
   MACROBLOCK *const x = &td->mb;
   MACROBLOCKD *const xd = &x->e_mbd;
+  const TileInfo *const tile_info = &tile_data->tile_info;
+
+  // Row multi-threading hands a tile's rows to any thread, and a thread that
+  // never encodes the tile's first row would keep cost tables from another
+  // tile or frame. Per-tile costs are therefore filled from the tile's
+  // starting contexts, once per thread for each tile of each frame: the same
+  // tables the first superblock of the tile computes in single-thread order.
+  int tile_costs_due = 0;
+  if (cpi->mt_info.row_mt_enabled && mi_col == tile_info->mi_col_start) {
+    const uint64_t key =
+        ((uint64_t)cm->current_frame.frame_number << 16) |
+        (uint64_t)(tile_info->tile_row * cm->tiles.cols + tile_info->tile_col +
+                   1);
+    if (td->tile_costs_key != key) {
+      td->tile_costs_key = key;
+      tile_costs_due = 1;
+    }
+  }
 
   switch (cpi->oxcf.cost_upd_freq.coeff) {
     case COST_UPD_TILE:  // Tile level
+      if (tile_costs_due) {
+        av2_fill_coeff_costs(&x->coeff_costs, &tile_data->tctx, num_planes);
+        break;
+      }
       if (mi_row != tile_info->mi_row_start) break;
       AVM_FALLTHROUGH_INTENDED;
     case COST_UPD_SBROW:  // SB row level in tile
@@ -1237,6 +1259,10 @@ void av2_set_cost_upd_freq(AV2_COMP *cpi, ThreadData *td,
 
   switch (cpi->oxcf.cost_upd_freq.mode) {
     case COST_UPD_TILE:  // Tile level
+      if (tile_costs_due) {
+        av2_fill_mode_rates(cm, &x->mode_costs, &tile_data->tctx);
+        break;
+      }
       if (mi_row != tile_info->mi_row_start) break;
       AVM_FALLTHROUGH_INTENDED;
     case COST_UPD_SBROW:  // SB row level in tile
@@ -1250,6 +1276,14 @@ void av2_set_cost_upd_freq(AV2_COMP *cpi, ThreadData *td,
   switch (cpi->oxcf.cost_upd_freq.mv) {
     case COST_UPD_OFF: break;
     case COST_UPD_TILE:  // Tile level
+      if (tile_costs_due) {
+        av2_fill_mv_costs(&tile_data->tctx,
+                          cm->features.cur_frame_force_integer_mv,
+                          cm->features.fr_mv_precision, &x->mv_costs);
+        if (cm->features.allow_intrabc)
+          fill_dv_costs(&x->dv_costs, &tile_data->tctx, &x->mv_costs);
+        break;
+      }
       if (mi_row != tile_info->mi_row_start) break;
       AVM_FALLTHROUGH_INTENDED;
     case COST_UPD_SBROW:  // SB row level in tile
