@@ -1425,6 +1425,11 @@ static AVM_INLINE void encode_sb_row(AV2_COMP *cpi, ThreadData *td,
 
   // Initialize the left context for the new SB row
   av2_zero_left_context(xd);
+  // With rows on several threads, only sync_range superblocks of the row
+  // above are known to be done ahead of this one (see av2_is_dv_valid()).
+  xd->intrabc_rowmt_lead = enc_row_mt->sync_read_ptr == av2_row_mt_sync_read
+                               ? row_mt_sync->sync_range
+                               : 0;
 
   // Reset delta for quantizer and loof filters at the beginning of every tile
   if (mi_row == tile_info->mi_row_start || row_mt_enabled) {

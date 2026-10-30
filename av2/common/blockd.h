@@ -2334,6 +2334,11 @@ typedef struct macroblockd {
   /*! \brief Flag to indicate whether reduced transform partition mode is on and
    * is the same as `cm->seq_params.reduced_tx_part_set` */
   int reduced_tx_part_set;
+  /*! \brief Encoder only: when superblock rows are encoded on several
+   * threads, the row k above is only known to be k * intrabc_rowmt_lead
+   * superblocks ahead, so intraBC must not reference further right than that.
+   * 0 (the decoder, single-threaded encoding) adds no limit. */
+  int intrabc_rowmt_lead;
 } MACROBLOCKD;
 
 /*!\cond */

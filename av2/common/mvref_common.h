@@ -1014,6 +1014,17 @@ static INLINE int av2_is_dv_valid(const MV dv, const AV2_COMMON *cm,
       src_sb64_col >=
           active_sb64_col - INTRABC_DELAY_SB64 - sb_64_residual + wf_offset)
     return 0;
+  // The wavefront above lets a block reach (1 + INTRABC_DELAY_SB64) 64-wide
+  // columns further right for every row up: more than an encoder running
+  // rows on threads has finished there.
+  if (xd->intrabc_rowmt_lead > 0 && src_sb_row < active_sb_row) {
+    const int src_sb_col =
+        ((src_right_edge >> 3) - 1) >> (mib_size_log2 + MI_SIZE_LOG2);
+    const int active_sb_col = mi_col >> mib_size_log2;
+    if (src_sb_col >
+        active_sb_col + (active_sb_row - src_sb_row) * xd->intrabc_rowmt_lead)
+      return 0;
+  }
   return 1;
 }
 

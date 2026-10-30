@@ -1387,6 +1387,8 @@ static INLINE int assign_dv(AV2_COMMON *cm, MACROBLOCKD *xd, int_mv *mv,
 
   mv_clamp_to_integer(&mv->as_mv);
 
+  // The encoder-only row-MT limit never applies to decoding.
+  xd->intrabc_rowmt_lead = 0;
   const int valid = av2_is_dv_valid(mv->as_mv, cm, xd, mi_row, mi_col, bsize,
                                     cm->mib_size_log2);
   return valid;
