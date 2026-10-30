@@ -484,7 +484,7 @@ static int cfl_rd_pick_alpha(MACROBLOCK *const x, const AV2_COMP *const cpi,
   return best_rate_overhead;
 }
 
-int get_uv_mode_cost(MB_MODE_INFO *mbmi, const ModeCosts mode_costs,
+int get_uv_mode_cost(MB_MODE_INFO *mbmi, const ModeCosts *mode_costs,
                      MACROBLOCKD *xd, CFL_ALLOWED_TYPE cfl_allowed,
                      int mode_index) {
   assert(mode_index < UV_CFL_PRED);
@@ -492,17 +492,17 @@ int get_uv_mode_cost(MB_MODE_INFO *mbmi, const ModeCosts mode_costs,
   if (cfl_allowed) {
     const int cfl_ctx = get_cfl_ctx(xd);
     if (mbmi->uv_mode == UV_CFL_PRED) {
-      return mode_costs.cfl_mode_cost[cfl_ctx][1];
+      return mode_costs->cfl_mode_cost[cfl_ctx][1];
     }
-    int cost = mode_costs.cfl_mode_cost[cfl_ctx][0];
+    int cost = mode_costs->cfl_mode_cost[cfl_ctx][0];
     int mode_set_low = AVMMIN(mode_index, CHROMA_INTRA_MODE_INDEX_COUNT - 1);
-    cost += mode_costs.intra_uv_mode_cost[uv_context][mode_set_low];
+    cost += mode_costs->intra_uv_mode_cost[uv_context][mode_set_low];
     if (mode_set_low == (CHROMA_INTRA_MODE_INDEX_COUNT - 1))
       cost += av2_cost_literal(3);
     return cost;
   }
   int mode_set_low = AVMMIN(mode_index, CHROMA_INTRA_MODE_INDEX_COUNT - 1);
-  int cost = mode_costs.intra_uv_mode_cost[uv_context][mode_set_low];
+  int cost = mode_costs->intra_uv_mode_cost[uv_context][mode_set_low];
   if (mode_set_low == (CHROMA_INTRA_MODE_INDEX_COUNT - 1))
     cost += av2_cost_literal(3);
   return cost;
@@ -673,7 +673,7 @@ int64_t av2_rd_pick_intra_sbuv_mode(const AV2_COMP *const cpi, MACROBLOCK *x,
       }
       if (mbmi->use_dpcm_uv == 0) {
         mode_cost += get_uv_mode_cost(
-            mbmi, x->mode_costs, xd,
+            mbmi, &x->mode_costs, xd,
             is_cfl_allowed(cm->seq_params.enable_cfl_intra, xd) ||
                 is_mhccp_allowed(cm, xd),
             mbmi->uv_mode_idx);
