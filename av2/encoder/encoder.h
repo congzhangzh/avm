@@ -3170,6 +3170,11 @@ typedef struct AV2_COMP {
    * Flag indicating if banding metadata is available for the current frame
    */
   int band_metadata_present;
+  /*!
+   * Scratch output for tiles packed on the worker threads, and its size.
+   */
+  uint8_t *tile_pack_buf;
+  size_t tile_pack_buf_size;
 } AV2_COMP;
 
 /*!

@@ -160,6 +160,9 @@ static AVM_INLINE void dealloc_compressor_data(AV2_COMP *cpi) {
   dealloc_context_buffers_ext(&cpi->mbmi_ext_info);
 
   avm_free(cpi->tile_data);
+  avm_free(cpi->tile_pack_buf);
+  cpi->tile_pack_buf = NULL;
+  cpi->tile_pack_buf_size = 0;
   cpi->tile_data = NULL;
 
   // Delete sementation map

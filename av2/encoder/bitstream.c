@@ -54,6 +54,7 @@
 #include "av2/common/tile_common.h"
 
 #include "av2/encoder/bitstream.h"
+#include "av2/encoder/ethread.h"
 #include "av2/common/cost.h"
 #include "av2/encoder/encodemv.h"
 #include "av2/encoder/encodetxb.h"
@@ -728,7 +729,7 @@ int av2_neg_interleave(int x, int ref, int max) {
   }
 }
 
-static AVM_INLINE void write_segment_id(AV2_COMP *cpi,
+static AVM_INLINE void write_segment_id(AV2_COMP *cpi, ThreadData *td,
                                         const MB_MODE_INFO *const mbmi,
                                         avm_writer *w,
                                         const struct segmentation *seg,
@@ -737,7 +738,7 @@ static AVM_INLINE void write_segment_id(AV2_COMP *cpi,
   if (!seg->enabled || !seg->update_map) return;
 
   AV2_COMMON *const cm = &cpi->common;
-  MACROBLOCKD *const xd = &cpi->td.mb.e_mbd;
+  MACROBLOCKD *const xd = &td->mb.e_mbd;
   int cdf_num;
   const int pred = av2_get_spatial_seg_pred(cm, xd, &cdf_num, 0);
   const int mi_row = xd->mi_row;
@@ -1415,9 +1416,9 @@ static AVM_INLINE void write_ccso(const AV2_COMMON *cm, MACROBLOCKD *const xd,
 }
 
 static AVM_INLINE void write_inter_segment_id(
-    AV2_COMP *cpi, avm_writer *w, const struct segmentation *const seg,
+    AV2_COMP *cpi, ThreadData *td, avm_writer *w, const struct segmentation *const seg,
     struct segmentation_probs *const segp, int skip, int preskip) {
-  MACROBLOCKD *const xd = &cpi->td.mb.e_mbd;
+  MACROBLOCKD *const xd = &td->mb.e_mbd;
   MB_MODE_INFO *const mbmi = xd->mi[0];
   AV2_COMMON *const cm = &cpi->common;
   const int mi_row = xd->mi_row;
@@ -1429,7 +1430,7 @@ static AVM_INLINE void write_inter_segment_id(
     } else {
       if (seg->segid_preskip) return;
       if (skip) {
-        write_segment_id(cpi, mbmi, w, seg, segp, 1);
+        write_segment_id(cpi, td, mbmi, w, seg, segp, 1);
         if (seg->temporal_update) mbmi->seg_id_predicted = 0;
         return;
       }
@@ -1439,7 +1440,7 @@ static AVM_INLINE void write_inter_segment_id(
       avm_cdf_prob *pred_cdf = av2_get_pred_cdf_seg_id(segp, xd);
       avm_write_symbol(w, pred_flag, pred_cdf, 2);
       if (!pred_flag) {
-        write_segment_id(cpi, mbmi, w, seg, segp, 0);
+        write_segment_id(cpi, td, mbmi, w, seg, segp, 0);
       }
       if (pred_flag) {
         set_spatial_segment_id(&cm->mi_params, cm->cur_frame->seg_map,
@@ -1447,20 +1448,20 @@ static AVM_INLINE void write_inter_segment_id(
                                mbmi->segment_id);
       }
     } else {
-      write_segment_id(cpi, mbmi, w, seg, segp, 0);
+      write_segment_id(cpi, td, mbmi, w, seg, segp, 0);
     }
   }
 }
 
 // If delta q is present, writes delta_q index.
 // Also writes delta_q loop filter levels, if present.
-static AVM_INLINE void write_delta_q_params(AV2_COMP *cpi, int skip,
+static AVM_INLINE void write_delta_q_params(AV2_COMP *cpi, ThreadData *td, int skip,
                                             avm_writer *w) {
   AV2_COMMON *const cm = &cpi->common;
   const DeltaQInfo *const delta_q_info = &cm->delta_q_info;
 
   if (delta_q_info->delta_q_present_flag) {
-    MACROBLOCK *const x = &cpi->td.mb;
+    MACROBLOCK *const x = &td->mb;
     MACROBLOCKD *const xd = &x->e_mbd;
     const MB_MODE_INFO *const mbmi = xd->mi[0];
     const BLOCK_SIZE bsize = mbmi->sb_type[xd->tree_type == CHROMA_PART];
@@ -1534,11 +1535,11 @@ static AVM_INLINE void write_intra_uv_mode(MACROBLOCKD *const xd,
     avm_write_literal(w, uv_mode_idx - mode_set_low, 3);
 }
 
-static AVM_INLINE void write_intra_prediction_modes(AV2_COMP *cpi,
+static AVM_INLINE void write_intra_prediction_modes(AV2_COMP *cpi, ThreadData *td,
                                                     int is_keyframe,
                                                     avm_writer *w) {
   const AV2_COMMON *const cm = &cpi->common;
-  MACROBLOCK *const x = &cpi->td.mb;
+  MACROBLOCK *const x = &td->mb;
   MACROBLOCKD *const xd = &x->e_mbd;
   FRAME_CONTEXT *ec_ctx = xd->tile_ctx;
   const MB_MODE_INFO *const mbmi = xd->mi[0];
@@ -1742,9 +1743,9 @@ static void write_pb_mv_precision(const AV2_COMMON *const cm,
   }
 }
 
-static AVM_INLINE void pack_inter_mode_mvs(AV2_COMP *cpi, avm_writer *w) {
+static AVM_INLINE void pack_inter_mode_mvs(AV2_COMP *cpi, ThreadData *td, avm_writer *w) {
   AV2_COMMON *const cm = &cpi->common;
-  MACROBLOCK *const x = &cpi->td.mb;
+  MACROBLOCK *const x = &td->mb;
   MACROBLOCKD *const xd = &x->e_mbd;
   FRAME_CONTEXT *ec_ctx = xd->tile_ctx;
   const struct segmentation *const seg = &cm->seg;
@@ -1763,7 +1764,7 @@ static AVM_INLINE void pack_inter_mode_mvs(AV2_COMP *cpi, avm_writer *w) {
 
   assert(IMPLIES(bsize == BLOCK_4X4, !is_inter && !mbmi->skip_mode));
   if (xd->tree_type != CHROMA_PART)
-    write_inter_segment_id(cpi, w, seg, segp, 0, 1);
+    write_inter_segment_id(cpi, td, w, seg, segp, 0, 1);
 
   write_skip_mode(cm, xd, mbmi, w);
 
@@ -1789,7 +1790,7 @@ static AVM_INLINE void pack_inter_mode_mvs(AV2_COMP *cpi, avm_writer *w) {
   }
 
   if (xd->tree_type != CHROMA_PART)
-    write_inter_segment_id(cpi, w, seg, segp, skip, 0);
+    write_inter_segment_id(cpi, td, w, seg, segp, skip, 0);
 
   // check BRU inter prediction motion vector
   if (is_inter && !bru_is_valid_inter(cm, xd)) {
@@ -1804,7 +1805,7 @@ static AVM_INLINE void pack_inter_mode_mvs(AV2_COMP *cpi, avm_writer *w) {
   if (cm->seq_params.enable_ccso && xd->tree_type != CHROMA_PART)
     write_ccso(cm, xd, w);
 
-  if (xd->tree_type != CHROMA_PART) write_delta_q_params(cpi, skip, w);
+  if (xd->tree_type != CHROMA_PART) write_delta_q_params(cpi, td, skip, w);
 
   assert(IMPLIES(xd->lossless[mbmi->segment_id],
                  !cpi->common.delta_q_info.delta_q_present_flag));
@@ -1888,7 +1889,7 @@ static AVM_INLINE void pack_inter_mode_mvs(AV2_COMP *cpi, avm_writer *w) {
     return;
   }
   if (!is_inter) {
-    write_intra_prediction_modes(cpi, mbmi->region_type == INTRA_REGION, w);
+    write_intra_prediction_modes(cpi, td, mbmi->region_type == INTRA_REGION, w);
   } else {
     int16_t mode_ctx;
 
@@ -2232,7 +2233,7 @@ static AVM_INLINE void write_intrabc_info(
 }
 
 static AVM_INLINE void write_mb_modes_kf(
-    AV2_COMP *cpi, MACROBLOCKD *xd,
+    AV2_COMP *cpi, ThreadData *td, MACROBLOCKD *xd,
     const MB_MODE_INFO_EXT_FRAME *mbmi_ext_frame, avm_writer *w) {
   AV2_COMMON *const cm = &cpi->common;
   FRAME_CONTEXT *ec_ctx = xd->tile_ctx;
@@ -2241,7 +2242,7 @@ static AVM_INLINE void write_mb_modes_kf(
   const MB_MODE_INFO *const mbmi = xd->mi[0];
 
   if (seg->segid_preskip && xd->tree_type != CHROMA_PART)
-    write_segment_id(cpi, mbmi, w, seg, segp, 0);
+    write_segment_id(cpi, td, mbmi, w, seg, segp, 0);
 
   if (av2_allow_intrabc(cm, xd, mbmi->sb_type[xd->tree_type == CHROMA_PART]) &&
       xd->tree_type != CHROMA_PART) {
@@ -2257,7 +2258,7 @@ static AVM_INLINE void write_mb_modes_kf(
   }
 
   if (!seg->segid_preskip && seg->update_map && xd->tree_type != CHROMA_PART)
-    write_segment_id(cpi, mbmi, w, seg, segp, skip);
+    write_segment_id(cpi, td, mbmi, w, seg, segp, skip);
 
   if (xd->tree_type != CHROMA_PART) write_gdf(cm, xd, w);
 
@@ -2266,7 +2267,7 @@ static AVM_INLINE void write_mb_modes_kf(
   if (cm->seq_params.enable_ccso && xd->tree_type != CHROMA_PART)
     write_ccso(cm, xd, w);
 
-  if (xd->tree_type != CHROMA_PART) write_delta_q_params(cpi, skip, w);
+  if (xd->tree_type != CHROMA_PART) write_delta_q_params(cpi, td, skip, w);
   assert(IMPLIES(xd->lossless[mbmi->segment_id],
                  !cpi->common.delta_q_info.delta_q_present_flag));
   const int seg_qindex =
@@ -2317,7 +2318,7 @@ static AVM_INLINE void write_mb_modes_kf(
     if (is_intrabc_block(mbmi, xd->tree_type)) return;
   }
 
-  write_intra_prediction_modes(cpi, 1, w);
+  write_intra_prediction_modes(cpi, td, 1, w);
 }
 
 #if CONFIG_RD_DEBUG
@@ -2415,13 +2416,13 @@ static AVM_INLINE void enc_dump_logs(
 }
 #endif  // ENC_MISMATCH_DEBUG
 
-static AVM_INLINE void write_mbmi_b(AV2_COMP *cpi, avm_writer *w) {
+static AVM_INLINE void write_mbmi_b(AV2_COMP *cpi, ThreadData *td, avm_writer *w) {
   AV2_COMMON *const cm = &cpi->common;
-  MACROBLOCKD *const xd = &cpi->td.mb.e_mbd;
+  MACROBLOCKD *const xd = &td->mb.e_mbd;
   MB_MODE_INFO *m = xd->mi[0];
 
   if (frame_is_intra_only(cm)) {
-    write_mb_modes_kf(cpi, xd, cpi->td.mb.mbmi_ext_frame, w);
+    write_mb_modes_kf(cpi, td, xd, td->mb.mbmi_ext_frame, w);
   } else {
     // has_subpel_mv_component needs the ref frame buffers set up to look
     // up if they are scaled. has_subpel_mv_component is in turn needed by
@@ -2432,7 +2433,7 @@ static AVM_INLINE void write_mbmi_b(AV2_COMP *cpi, avm_writer *w) {
     enc_dump_logs(cm, &cpi->mbmi_ext_info, xd->mi_row, xd->mi_col);
 #endif  // ENC_MISMATCH_DEBUG
 
-    pack_inter_mode_mvs(cpi, w);
+    pack_inter_mode_mvs(cpi, td, w);
   }
 }
 
@@ -2479,11 +2480,11 @@ static AVM_INLINE void write_inter_txb_coeff(
   }
 }
 
-static AVM_INLINE void write_tokens_b(AV2_COMP *cpi, avm_writer *w,
+static AVM_INLINE void write_tokens_b(AV2_COMP *cpi, ThreadData *td, avm_writer *w,
                                       const TokenExtra **tok,
                                       const TokenExtra *const tok_end) {
   AV2_COMMON *const cm = &cpi->common;
-  MACROBLOCK *const x = &cpi->td.mb;
+  MACROBLOCK *const x = &td->mb;
   MACROBLOCKD *const xd = &x->e_mbd;
   MB_MODE_INFO *const mbmi = xd->mi[0];
   const BLOCK_SIZE bsize = get_bsize_base(xd, mbmi, AVM_PLANE_Y);
@@ -2551,16 +2552,16 @@ static AVM_INLINE void write_tokens_b(AV2_COMP *cpi, avm_writer *w,
   }
 }
 
-static AVM_INLINE void write_modes_b(AV2_COMP *cpi, const TileInfo *const tile,
+static AVM_INLINE void write_modes_b(AV2_COMP *cpi, ThreadData *td, const TileInfo *const tile,
                                      avm_writer *w, const TokenExtra **tok,
                                      const TokenExtra *const tok_end,
                                      int mi_row, int mi_col) {
   const AV2_COMMON *cm = &cpi->common;
   const CommonModeInfoParams *const mi_params = &cm->mi_params;
-  MACROBLOCKD *xd = &cpi->td.mb.e_mbd;
+  MACROBLOCKD *xd = &td->mb.e_mbd;
   const int grid_idx = mi_row * mi_params->mi_stride + mi_col;
   xd->mi = mi_params->mi_grid_base + grid_idx;
-  cpi->td.mb.mbmi_ext_frame =
+  td->mb.mbmi_ext_frame =
       cpi->mbmi_ext_info.frame_base +
       get_mi_ext_idx(mi_row, mi_col, cm->mi_params.mi_alloc_bsize,
                      cpi->mbmi_ext_info.stride);
@@ -2615,7 +2616,7 @@ static AVM_INLINE void write_modes_b(AV2_COMP *cpi, const TileInfo *const tile,
     }
     return;
   } else
-    write_mbmi_b(cpi, w);
+    write_mbmi_b(cpi, td, w);
 
   const int plane_start = get_partition_plane_start(xd->tree_type);
   const int plane_end =
@@ -2683,7 +2684,7 @@ static AVM_INLINE void write_modes_b(AV2_COMP *cpi, const TileInfo *const tile,
   }
 
   if (!mbmi->skip_txfm[xd->tree_type == CHROMA_PART]) {
-    write_tokens_b(cpi, w, tok, tok_end);
+    write_tokens_b(cpi, td, w, tok, tok_end);
   } else if (!cm->features.coded_lossless) {
     // Assert only when LR is enabled.
     assert(1 == av2_get_txk_skip(cm, xd->mi_row, xd->mi_col, xd->tree_type,
@@ -2807,14 +2808,14 @@ static AVM_INLINE PARTITION_TYPE write_partition(
 }
 
 static AVM_INLINE void write_modes_sb(
-    AV2_COMP *const cpi, const TileInfo *const tile, avm_writer *const w,
+    AV2_COMP *const cpi, ThreadData *td, const TileInfo *const tile, avm_writer *const w,
     const TokenExtra **tok, const TokenExtra *const tok_end,
     const TokenExtra **tok_chroma, const TokenExtra *const tok_chroma_end,
     PARTITION_TREE *ptree, PARTITION_TREE *ptree_luma, int mi_row, int mi_col,
     BLOCK_SIZE bsize) {
   AV2_COMMON *cm = &cpi->common;
   const CommonModeInfoParams *const mi_params = &cm->mi_params;
-  MACROBLOCKD *const xd = &cpi->td.mb.e_mbd;
+  MACROBLOCKD *const xd = &td->mb.e_mbd;
   assert(bsize < BLOCK_SIZES_ALL);
   const int hbs_w = mi_size_wide[bsize] / 2;
   const int hbs_h = mi_size_high[bsize] / 2;
@@ -2854,12 +2855,12 @@ static AVM_INLINE void write_modes_sb(
       (intra_sdp_enabled && bsize == BLOCK_64X64) ? 2 : 1;
   if (total_loop_num == 2 && xd->tree_type == SHARED_PART) {
     xd->tree_type = LUMA_PART;
-    write_modes_sb(cpi, tile, w, tok, tok_end, tok_chroma, tok_chroma_end,
+    write_modes_sb(cpi, td, tile, w, tok, tok_end, tok_chroma, tok_chroma_end,
                    ptree, ptree_luma, mi_row, mi_col, bsize);
     xd->tree_type = CHROMA_PART;
     assert(ptree_luma);
 
-    write_modes_sb(cpi, tile, w, tok, tok_end, tok_chroma, tok_chroma_end,
+    write_modes_sb(cpi, td, tile, w, tok, tok_end, tok_chroma, tok_chroma_end,
                    ptree_luma, ptree, mi_row, mi_col, bsize);
     xd->tree_type = SHARED_PART;
     return;
@@ -2882,7 +2883,7 @@ static AVM_INLINE void write_modes_sb(
           const RestorationUnitInfo *rui =
               &cm->rst_info[plane].unit_info[runit_idx];
           loop_restoration_write_sb_coeffs(cm, xd, rui, w, plane,
-                                           cpi->td.counts);
+                                           td->counts);
         }
       }
     }
@@ -2958,7 +2959,7 @@ static AVM_INLINE void write_modes_sb(
   switch (partition) {
     case PARTITION_NONE:
       write_modes_b(
-          cpi, tile, w,
+          cpi, td, tile, w,
           (intra_sdp_enabled && xd->tree_type == CHROMA_PART) ? tok_chroma
                                                               : tok,
           (intra_sdp_enabled && xd->tree_type == CHROMA_PART) ? tok_chroma_end
@@ -2966,21 +2967,21 @@ static AVM_INLINE void write_modes_sb(
           mi_row, mi_col);
       break;
     case PARTITION_HORZ:
-      write_modes_sb(cpi, tile, w, tok, tok_end, tok_chroma, tok_chroma_end,
+      write_modes_sb(cpi, td, tile, w, tok, tok_end, tok_chroma, tok_chroma_end,
                      ptree->sub_tree[0],
                      get_partition_subtree_const(ptree_luma, 0), mi_row, mi_col,
                      subsize);
-      write_modes_sb(cpi, tile, w, tok, tok_end, tok_chroma, tok_chroma_end,
+      write_modes_sb(cpi, td, tile, w, tok, tok_end, tok_chroma, tok_chroma_end,
                      ptree->sub_tree[1],
                      get_partition_subtree_const(ptree_luma, 1), mi_row + hbs_h,
                      mi_col, subsize);
       break;
     case PARTITION_VERT:
-      write_modes_sb(cpi, tile, w, tok, tok_end, tok_chroma, tok_chroma_end,
+      write_modes_sb(cpi, td, tile, w, tok, tok_end, tok_chroma, tok_chroma_end,
                      ptree->sub_tree[0],
                      get_partition_subtree_const(ptree_luma, 0), mi_row, mi_col,
                      subsize);
-      write_modes_sb(cpi, tile, w, tok, tok_end, tok_chroma, tok_chroma_end,
+      write_modes_sb(cpi, td, tile, w, tok, tok_end, tok_chroma, tok_chroma_end,
                      ptree->sub_tree[1],
                      get_partition_subtree_const(ptree_luma, 1), mi_row,
                      mi_col + hbs_w, subsize);
@@ -2989,19 +2990,19 @@ static AVM_INLINE void write_modes_sb(
       const BLOCK_SIZE bsize_big = get_partition_subsize(bsize, PARTITION_HORZ);
       const BLOCK_SIZE bsize_med = subsize_lookup[PARTITION_HORZ][bsize_big];
       assert(subsize == subsize_lookup[PARTITION_HORZ][bsize_med]);
-      write_modes_sb(cpi, tile, w, tok, tok_end, tok_chroma, tok_chroma_end,
+      write_modes_sb(cpi, td, tile, w, tok, tok_end, tok_chroma, tok_chroma_end,
                      ptree->sub_tree[0],
                      get_partition_subtree_const(ptree_luma, 0), mi_row, mi_col,
                      subsize);
-      write_modes_sb(cpi, tile, w, tok, tok_end, tok_chroma, tok_chroma_end,
+      write_modes_sb(cpi, td, tile, w, tok, tok_end, tok_chroma, tok_chroma_end,
                      ptree->sub_tree[1],
                      get_partition_subtree_const(ptree_luma, 1), mi_row + ebs_h,
                      mi_col, bsize_med);
-      write_modes_sb(cpi, tile, w, tok, tok_end, tok_chroma, tok_chroma_end,
+      write_modes_sb(cpi, td, tile, w, tok, tok_end, tok_chroma, tok_chroma_end,
                      ptree->sub_tree[2],
                      get_partition_subtree_const(ptree_luma, 2),
                      mi_row + 3 * ebs_h, mi_col, bsize_big);
-      write_modes_sb(cpi, tile, w, tok, tok_end, tok_chroma, tok_chroma_end,
+      write_modes_sb(cpi, td, tile, w, tok, tok_end, tok_chroma, tok_chroma_end,
                      ptree->sub_tree[3],
                      get_partition_subtree_const(ptree_luma, 3),
                      mi_row + 7 * ebs_h, mi_col, subsize);
@@ -3011,19 +3012,19 @@ static AVM_INLINE void write_modes_sb(
       const BLOCK_SIZE bsize_big = get_partition_subsize(bsize, PARTITION_HORZ);
       const BLOCK_SIZE bsize_med = subsize_lookup[PARTITION_HORZ][bsize_big];
       assert(subsize == subsize_lookup[PARTITION_HORZ][bsize_med]);
-      write_modes_sb(cpi, tile, w, tok, tok_end, tok_chroma, tok_chroma_end,
+      write_modes_sb(cpi, td, tile, w, tok, tok_end, tok_chroma, tok_chroma_end,
                      ptree->sub_tree[0],
                      get_partition_subtree_const(ptree_luma, 0), mi_row, mi_col,
                      subsize);
-      write_modes_sb(cpi, tile, w, tok, tok_end, tok_chroma, tok_chroma_end,
+      write_modes_sb(cpi, td, tile, w, tok, tok_end, tok_chroma, tok_chroma_end,
                      ptree->sub_tree[1],
                      get_partition_subtree_const(ptree_luma, 1), mi_row + ebs_h,
                      mi_col, bsize_big);
-      write_modes_sb(cpi, tile, w, tok, tok_end, tok_chroma, tok_chroma_end,
+      write_modes_sb(cpi, td, tile, w, tok, tok_end, tok_chroma, tok_chroma_end,
                      ptree->sub_tree[2],
                      get_partition_subtree_const(ptree_luma, 2),
                      mi_row + 5 * ebs_h, mi_col, bsize_med);
-      write_modes_sb(cpi, tile, w, tok, tok_end, tok_chroma, tok_chroma_end,
+      write_modes_sb(cpi, td, tile, w, tok, tok_end, tok_chroma, tok_chroma_end,
                      ptree->sub_tree[3],
                      get_partition_subtree_const(ptree_luma, 3),
                      mi_row + 7 * ebs_h, mi_col, subsize);
@@ -3033,19 +3034,19 @@ static AVM_INLINE void write_modes_sb(
       const BLOCK_SIZE bsize_big = get_partition_subsize(bsize, PARTITION_VERT);
       const BLOCK_SIZE bsize_med = subsize_lookup[PARTITION_VERT][bsize_big];
       assert(subsize == subsize_lookup[PARTITION_VERT][bsize_med]);
-      write_modes_sb(cpi, tile, w, tok, tok_end, tok_chroma, tok_chroma_end,
+      write_modes_sb(cpi, td, tile, w, tok, tok_end, tok_chroma, tok_chroma_end,
                      ptree->sub_tree[0],
                      get_partition_subtree_const(ptree_luma, 0), mi_row, mi_col,
                      subsize);
-      write_modes_sb(cpi, tile, w, tok, tok_end, tok_chroma, tok_chroma_end,
+      write_modes_sb(cpi, td, tile, w, tok, tok_end, tok_chroma, tok_chroma_end,
                      ptree->sub_tree[1],
                      get_partition_subtree_const(ptree_luma, 1), mi_row,
                      mi_col + ebs_w, bsize_med);
-      write_modes_sb(cpi, tile, w, tok, tok_end, tok_chroma, tok_chroma_end,
+      write_modes_sb(cpi, td, tile, w, tok, tok_end, tok_chroma, tok_chroma_end,
                      ptree->sub_tree[2],
                      get_partition_subtree_const(ptree_luma, 2), mi_row,
                      mi_col + 3 * ebs_w, bsize_big);
-      write_modes_sb(cpi, tile, w, tok, tok_end, tok_chroma, tok_chroma_end,
+      write_modes_sb(cpi, td, tile, w, tok, tok_end, tok_chroma, tok_chroma_end,
                      ptree->sub_tree[3],
                      get_partition_subtree_const(ptree_luma, 3), mi_row,
                      mi_col + 7 * ebs_w, subsize);
@@ -3055,19 +3056,19 @@ static AVM_INLINE void write_modes_sb(
       const BLOCK_SIZE bsize_big = get_partition_subsize(bsize, PARTITION_VERT);
       const BLOCK_SIZE bsize_med = subsize_lookup[PARTITION_VERT][bsize_big];
       assert(subsize == subsize_lookup[PARTITION_VERT][bsize_med]);
-      write_modes_sb(cpi, tile, w, tok, tok_end, tok_chroma, tok_chroma_end,
+      write_modes_sb(cpi, td, tile, w, tok, tok_end, tok_chroma, tok_chroma_end,
                      ptree->sub_tree[0],
                      get_partition_subtree_const(ptree_luma, 0), mi_row, mi_col,
                      subsize);
-      write_modes_sb(cpi, tile, w, tok, tok_end, tok_chroma, tok_chroma_end,
+      write_modes_sb(cpi, td, tile, w, tok, tok_end, tok_chroma, tok_chroma_end,
                      ptree->sub_tree[1],
                      get_partition_subtree_const(ptree_luma, 1), mi_row,
                      mi_col + ebs_w, bsize_big);
-      write_modes_sb(cpi, tile, w, tok, tok_end, tok_chroma, tok_chroma_end,
+      write_modes_sb(cpi, td, tile, w, tok, tok_end, tok_chroma, tok_chroma_end,
                      ptree->sub_tree[2],
                      get_partition_subtree_const(ptree_luma, 2), mi_row,
                      mi_col + 5 * ebs_w, bsize_med);
-      write_modes_sb(cpi, tile, w, tok, tok_end, tok_chroma, tok_chroma_end,
+      write_modes_sb(cpi, td, tile, w, tok, tok_end, tok_chroma, tok_chroma_end,
                      ptree->sub_tree[3],
                      get_partition_subtree_const(ptree_luma, 3), mi_row,
                      mi_col + 7 * ebs_w, subsize);
@@ -3086,26 +3087,26 @@ static AVM_INLINE void write_modes_sb(
         const int this_mi_row = mi_row + offset_r;
         const int this_mi_col = mi_col + offset_c;
 
-        write_modes_sb(cpi, tile, w, tok, tok_end, tok_chroma, tok_chroma_end,
+        write_modes_sb(cpi, td, tile, w, tok, tok_end, tok_chroma, tok_chroma_end,
                        ptree->sub_tree[i],
                        get_partition_subtree_const(ptree_luma, i), this_mi_row,
                        this_mi_col, this_bsize);
       }
       break;
     case PARTITION_SPLIT:
-      write_modes_sb(cpi, tile, w, tok, tok_end, tok_chroma, tok_chroma_end,
+      write_modes_sb(cpi, td, tile, w, tok, tok_end, tok_chroma, tok_chroma_end,
                      ptree->sub_tree[0],
                      get_partition_subtree_const(ptree_luma, 0), mi_row, mi_col,
                      subsize);
-      write_modes_sb(cpi, tile, w, tok, tok_end, tok_chroma, tok_chroma_end,
+      write_modes_sb(cpi, td, tile, w, tok, tok_end, tok_chroma, tok_chroma_end,
                      ptree->sub_tree[1],
                      get_partition_subtree_const(ptree_luma, 1), mi_row,
                      mi_col + hbs_w, subsize);
-      write_modes_sb(cpi, tile, w, tok, tok_end, tok_chroma, tok_chroma_end,
+      write_modes_sb(cpi, td, tile, w, tok, tok_end, tok_chroma, tok_chroma_end,
                      ptree->sub_tree[2],
                      get_partition_subtree_const(ptree_luma, 2), mi_row + hbs_h,
                      mi_col, subsize);
-      write_modes_sb(cpi, tile, w, tok, tok_end, tok_chroma, tok_chroma_end,
+      write_modes_sb(cpi, td, tile, w, tok, tok_end, tok_chroma, tok_chroma_end,
                      ptree->sub_tree[3],
                      get_partition_subtree_const(ptree_luma, 3), mi_row + hbs_h,
                      mi_col + hbs_w, subsize);
@@ -3118,7 +3119,7 @@ static AVM_INLINE void write_modes_sb(
     // run chroma part in luma region
     xd->tree_type = CHROMA_PART;
     write_modes_b(
-        cpi, tile, w,
+        cpi, td, tile, w,
         (intra_sdp_enabled && xd->tree_type == CHROMA_PART) ? tok_chroma : tok,
         (intra_sdp_enabled && xd->tree_type == CHROMA_PART) ? tok_chroma_end
                                                             : tok_end,
@@ -3136,12 +3137,12 @@ static AVM_INLINE void write_modes_sb(
   }
 }
 
-static AVM_INLINE void write_modes(AV2_COMP *const cpi,
+static AVM_INLINE void write_modes(AV2_COMP *const cpi, ThreadData *td,
                                    const TileInfo *const tile,
                                    avm_writer *const w, int tile_row,
                                    int tile_col) {
   AV2_COMMON *const cm = &cpi->common;
-  MACROBLOCKD *const xd = &cpi->td.mb.e_mbd;
+  MACROBLOCKD *const xd = &td->mb.e_mbd;
   const int mi_row_start = tile->mi_row_start;
   const int mi_row_end = tile->mi_row_end;
   const int mi_col_start = tile->mi_col_start;
@@ -3178,7 +3179,7 @@ static AVM_INLINE void write_modes(AV2_COMP *const cpi,
          mi_col += cm->mib_size) {
       av2_reset_is_mi_coded_map(xd, cm->mib_size);
       xd->sbi = av2_get_sb_info(cm, mi_row, mi_col);
-      cpi->td.mb.cb_coef_buff = av2_get_cb_coeff_buffer(cpi, mi_row, mi_col);
+      td->mb.cb_coef_buff = av2_get_cb_coeff_buffer(cpi, mi_row, mi_col);
 
       xd->tree_type = SHARED_PART;
       if (!bru_is_sb_active(cm, mi_col, mi_row)) {
@@ -3186,7 +3187,7 @@ static AVM_INLINE void write_modes(AV2_COMP *const cpi,
         xd->sbi->ptree_root[av2_get_sdp_idx(xd->tree_type)]->partition =
             PARTITION_NONE;
       }
-      write_modes_sb(cpi, tile, w, &tok, tok_end, &tok_chroma, tok_end_chroma,
+      write_modes_sb(cpi, td, tile, w, &tok, tok_end, &tok_chroma, tok_end_chroma,
                      xd->sbi->ptree_root[av2_get_sdp_idx(xd->tree_type)],
                      (intra_sdp_enabled ? xd->sbi->ptree_root[1] : NULL),
                      mi_row, mi_col, cm->sb_size);
@@ -6061,6 +6062,135 @@ uint32_t write_multi_frame_header_obu(const MultiFrameHeader *mfh_param,
   return size;
 }
 
+// Writes one tile's modes and coefficients to out and returns its size;
+// *symbols counts the symbols written, continuing from its value.
+static unsigned int pack_one_tile(AV2_COMP *const cpi, ThreadData *td,
+                                  TileInfo *tile_info, int tile_row,
+                                  int tile_col, uint8_t *out,
+                                  uint64_t *symbols) {
+  AV2_COMMON *const cm = &cpi->common;
+  const int tile_idx = tile_row * cm->tiles.cols + tile_col;
+  TileDataEnc *const this_tile = &cpi->tile_data[tile_idx];
+  MACROBLOCKD *const xd = &td->mb.e_mbd;
+  avm_writer w;
+  w.frame_symbol_count = *symbols;
+  xd->tile_ctx = &this_tile->tctx;
+  w.allow_update_cdf = !cm->features.disable_cdf_update;
+  const int num_planes = av2_num_planes(cm);
+  int num_filter_classes[MAX_MB_PLANE];
+  for (int p = 0; p < num_planes; ++p)
+    num_filter_classes[p] = cm->rst_info[p].num_filter_classes;
+  // The Wiener bank defaults depend on the base qindex. The decoder sets
+  // it at the start of every tile, whether delta q is on or not; do the
+  // same here, or a frame without delta q starts the bank from the
+  // qindex of an earlier frame.
+  xd->current_base_qindex = cm->quant_params.base_qindex;
+  av2_reset_loop_restoration(xd, 0, num_planes, num_filter_classes);
+  tile_info->tile_active_mode = this_tile->tile_info.tile_active_mode;
+  avm_start_encode(&w, out);
+  if (!cm->bru.frame_inactive_flag && !cm->bridge_frame_info.is_bridge_frame)
+    write_modes(cpi, td, tile_info, &w, tile_row, tile_col);
+  avm_stop_encode(&w);
+  *symbols = w.frame_symbol_count;
+  return w.pos;
+}
+
+typedef struct {
+  uint8_t *data;
+  unsigned int size;
+  uint64_t symbols;
+} PackedTile;
+
+typedef struct {
+  AV2_COMP *cpi;
+  PackedTile *tiles;
+  int start_tile_idx;
+  int end_tile_idx;
+  int num_workers;
+} PackTilesJob;
+
+// Packs every num_workers-th tile of the range, from the worker's index.
+static int pack_tiles_worker_hook(void *arg1, void *arg2) {
+  const PackTilesJob *const job = (const PackTilesJob *)arg1;
+  const int i = (int)(intptr_t)arg2;
+  AV2_COMP *const cpi = job->cpi;
+  AV2_COMMON *const cm = &cpi->common;
+  // worker->data1 is the job here; the worker's own data is in tile_thr_data.
+  ThreadData *const td =
+      i == 0 ? &cpi->td : cpi->mt_info.tile_thr_data[i].td;
+  for (int t = job->start_tile_idx + i; t <= job->end_tile_idx;
+       t += job->num_workers) {
+    const int tile_row = t / cm->tiles.cols;
+    const int tile_col = t % cm->tiles.cols;
+    // The writer reads the frame's mode info through its own MACROBLOCKD,
+    // set up as the main thread's.
+    if (td != &cpi->td) td->mb.e_mbd = cpi->td.mb.e_mbd;
+    TileInfo tile_info;
+    av2_tile_set_row(&tile_info, cm, tile_row);
+    av2_tile_set_col(&tile_info, cm, tile_col);
+    PackedTile *const out = &job->tiles[t];
+    out->symbols = 0;
+    out->size = pack_one_tile(cpi, td, &tile_info, tile_row, tile_col,
+                              out->data, &out->symbols);
+  }
+  return 1;
+}
+
+// With several tiles and workers, packs the tiles start..end on the workers
+// into cpi->tile_pack_buf and returns one PackedTile per tile index, or NULL
+// to pack serially.
+static PackedTile *pack_tiles_mt(AV2_COMP *const cpi, int start_tile_idx,
+                                 int end_tile_idx, PackedTile *tiles) {
+  AV2_COMMON *const cm = &cpi->common;
+  MultiThreadInfo *const mt_info = &cpi->mt_info;
+  const int num_tiles = end_tile_idx - start_tile_idx + 1;
+  const int num_workers =
+      AVMMIN(mt_info->workers ? mt_info->num_workers : 1, num_tiles);
+  if (num_workers <= 1 || cm->bru.frame_inactive_flag ||
+      cm->bridge_frame_info.is_bridge_frame)
+    return NULL;
+  // A tile's data never exceeds its raw samples; reserve that per tile.
+  size_t offsets[MAX_TILE_ROWS * MAX_TILE_COLS + 1];
+  size_t total = 0;
+  for (int t = start_tile_idx; t <= end_tile_idx; ++t) {
+    TileInfo tile_info;
+    av2_tile_set_row(&tile_info, cm, t / cm->tiles.cols);
+    av2_tile_set_col(&tile_info, cm, t % cm->tiles.cols);
+    const size_t pixels =
+        (size_t)(tile_info.mi_row_end - tile_info.mi_row_start) *
+        (tile_info.mi_col_end - tile_info.mi_col_start) * MI_SIZE * MI_SIZE;
+    offsets[t] = total;
+    total += pixels * 3 * 2 + 4096;
+  }
+  if (cpi->tile_pack_buf_size < total) {
+    avm_free(cpi->tile_pack_buf);
+    cpi->tile_pack_buf_size = 0;
+    CHECK_MEM_ERROR(cm, cpi->tile_pack_buf, (uint8_t *)avm_malloc(total));
+    cpi->tile_pack_buf_size = total;
+  }
+  for (int t = start_tile_idx; t <= end_tile_idx; ++t)
+    tiles[t].data = cpi->tile_pack_buf + offsets[t];
+  const PackTilesJob job = { cpi, tiles, start_tile_idx, end_tile_idx,
+                             num_workers };
+  const AVxWorkerInterface *const winterface = avm_get_worker_interface();
+  for (int i = num_workers - 1; i >= 0; i--) {
+    AVxWorker *const worker = &mt_info->workers[i];
+    worker->hook = pack_tiles_worker_hook;
+    worker->data1 = (void *)&job;
+    worker->data2 = (void *)(intptr_t)i;
+    if (i == 0)
+      winterface->execute(worker);
+    else
+      winterface->launch(worker);
+  }
+  int ok = 1;
+  for (int i = num_workers - 1; i >= 0; i--)
+    ok &= winterface->sync(&mt_info->workers[i]);
+  if (!ok)
+    avm_internal_error(&cm->error, AVM_CODEC_ERROR, "Failed to pack tiles");
+  return tiles;
+}
+
 static uint32_t write_tilegroup_payload(AV2_COMP *const cpi, uint8_t *const dst,
                                         struct avm_write_bit_buffer *saved_wb,
                                         int num_tgs, int start_tile_idx,
@@ -6083,6 +6213,9 @@ static uint32_t write_tilegroup_payload(AV2_COMP *const cpi, uint8_t *const dst,
 
   uint8_t *tile_data_start = dst + total_size;
   mode_bc.frame_symbol_count = 0;
+  PackedTile packed_tiles[MAX_TILE_ROWS * MAX_TILE_COLS];
+  PackedTile *const packed =
+      pack_tiles_mt(cpi, start_tile_idx, end_tile_idx, packed_tiles);
   int tile_idx = 0;
   for (tile_row = 0; tile_row < tile_rows; tile_row++) {
     TileInfo tile_info;
@@ -6095,34 +6228,21 @@ static uint32_t write_tilegroup_payload(AV2_COMP *const cpi, uint8_t *const dst,
       else if (tile_idx > end_tile_idx)
         break;
       TileBufferEnc *const buf = &tile_buffers[tile_row][tile_col];
-      TileDataEnc *this_tile = &cpi->tile_data[tile_idx];
 
       av2_tile_set_col(&tile_info, cm, tile_col);
       buf->data = dst + total_size;
       if (tile_idx < end_tile_idx) total_size += 4;
 
-      cpi->td.mb.e_mbd.tile_ctx = &this_tile->tctx;
-      mode_bc.allow_update_cdf = 1;
-      mode_bc.allow_update_cdf =
-          mode_bc.allow_update_cdf && !cm->features.disable_cdf_update;
-      const int num_planes = av2_num_planes(cm);
-      int num_filter_classes[MAX_MB_PLANE];
-      for (int p = 0; p < num_planes; ++p)
-        num_filter_classes[p] = cm->rst_info[p].num_filter_classes;
-      // The Wiener bank defaults depend on the base qindex. The decoder sets
-      // it at the start of every tile, whether delta q is on or not; do the
-      // same here, or a frame without delta q starts the bank from the
-      // qindex of an earlier frame.
-      cpi->td.mb.e_mbd.current_base_qindex = cm->quant_params.base_qindex;
-      av2_reset_loop_restoration(&cpi->td.mb.e_mbd, 0, num_planes,
-                                 num_filter_classes);
-      tile_info.tile_active_mode = this_tile->tile_info.tile_active_mode;
-      avm_start_encode(&mode_bc, dst + total_size);
-      if (!cm->bru.frame_inactive_flag &&
-          !cm->bridge_frame_info.is_bridge_frame)
-        write_modes(cpi, &tile_info, &mode_bc, tile_row, tile_col);
-      avm_stop_encode(&mode_bc);
-      unsigned int tile_size = mode_bc.pos;
+      unsigned int tile_size;
+      if (packed) {
+        // Packed on the workers: move the tile into place.
+        tile_size = packed[tile_idx].size;
+        memmove(dst + total_size, packed[tile_idx].data, tile_size);
+        mode_bc.frame_symbol_count += packed[tile_idx].symbols;
+      } else {
+        tile_size = pack_one_tile(cpi, &cpi->td, &tile_info, tile_row, tile_col,
+                                  dst + total_size, &mode_bc.frame_symbol_count);
+      }
       assert(tile_size >= AV2_MIN_TILE_SIZE_BYTES);
 
       // curr_tg_data_size += (tile_size + (tile_idx < end_tile_idx  ? 0 :
