@@ -27,7 +27,13 @@ PREDICTION_MODE av2_get_joint_mode(const MB_MODE_INFO *mi) {
 }
 
 void av2_reset_is_mi_coded_map(MACROBLOCKD *xd, int stride) {
-  av2_zero(xd->is_mi_coded);
+  // Every reader and writer indexes a superblock's own stride x stride mi
+  // grid (row and column offsets below the superblock size in mi), so only
+  // that part needs clearing: 2 x 256 bytes for a 64x64 superblock instead
+  // of 2 x MAX_MIB_SQUARE.
+  assert(stride * stride <= MAX_MIB_SQUARE);
+  memset(xd->is_mi_coded[0], 0, stride * stride);
+  memset(xd->is_mi_coded[1], 0, stride * stride);
   xd->is_mi_coded_stride = stride;
 }
 

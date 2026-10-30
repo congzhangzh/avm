@@ -3762,7 +3762,10 @@ void av2_build_inter_predictors(const AV2_COMMON *cm, MACROBLOCKD *xd,
                                 int build_for_decode, int bw, int bh, int mi_x,
                                 int mi_y, uint16_t **mc_buf,
                                 CalcSubpelParamsFunc calc_subpel_params_func) {
-  if (plane == AVM_PLANE_Y) {
+  // mv_refined is read only by the compound refinements (refinemv, optical
+  // flow) and by TIP blocks, so a single-reference block leaves it alone.
+  if (plane == AVM_PLANE_Y &&
+      (has_second_ref(mi) || is_tip_ref_frame(mi->ref_frame[0]))) {
     // Only the entries this block can reach need to start at zero: the TIP
     // path indexes them by unit row (TIP_MV_STRIDE units per 8 rows of the
     // block, plus the four 4x4 sub-blocks a unit may refine), and the regular
