@@ -6238,7 +6238,10 @@ static int64_t rd_pick_intrabc_mode_sb(const AV2_COMP *cpi, MACROBLOCK *x,
       }
 
       // With a hash match, the pixel search is very unlikely to do better.
-      if (!hash_first || hashsme == INT_MAX) {
+      // At level 2 an intra frame searches the hash table only.
+      const int hash_only = cpi->sf.mv_sf.intrabc_search_level >= 2 &&
+                            frame_is_intra_only(cm);
+      if (!hash_first || (hashsme == INT_MAX && !hash_only)) {
         int bestsme = av2_full_pixel_search(start_mv, &fullms_params, step_param,
                                             NULL, &best_mv.as_fullmv, NULL);
         int_mv best_subpel_mv;

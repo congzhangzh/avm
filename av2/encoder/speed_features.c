@@ -671,6 +671,9 @@ static void set_rt_speed_features_framesize_independent(
     sf->rt_sf.estimate_motion_for_var_based_partition = 1;
     sf->rt_sf.skip_primary_ref_frame_search = 1;
   }
+  if (speed >= 9) {
+    sf->mv_sf.intrabc_search_level = 2;
+  }
 }
 
 static AVM_INLINE void init_hl_sf(HIGH_LEVEL_SPEED_FEATURES *hl_sf) {

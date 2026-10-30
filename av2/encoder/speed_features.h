@@ -569,6 +569,7 @@ typedef struct MV_SPEED_FEATURES {
   //   0: full-pixel and hash search for every block size and direction.
   //   1: only square blocks up to 16x16; the full-pixel search runs only when
   //      the hash search finds nothing.
+  //   2: as 1, and intra frames search the hash table only.
   int intrabc_search_level;
 
   // Hash the intraBC blocks with one CRC32C (SSE4.2 where available) instead
