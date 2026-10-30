@@ -39,7 +39,11 @@ static int arm_cpu_env_mask(void) {
   return env && *env ? (int)strtol(env, NULL, 0) : ~0;
 }
 
-#if !CONFIG_RUNTIME_CPU_DETECT || defined(__APPLE__)
+// AArch64 always has NEON (Advanced SIMD is mandatory in ARMv8-A), so a
+// target without a detection method of its own, such as Windows on ARM64
+// with mingw (clang), needs no runtime check either.
+#if !CONFIG_RUNTIME_CPU_DETECT || defined(__APPLE__) || \
+    (defined(_WIN32) && defined(__aarch64__))
 
 int avm_arm_cpu_caps(void) {
   /* This function should actually be a no-op. There is no way to adjust any of
@@ -57,7 +61,7 @@ int avm_arm_cpu_caps(void) {
   return flags & mask;
 }
 
-#elif defined(_MSC_VER) /* end !CONFIG_RUNTIME_CPU_DETECT || __APPLE__ */
+#elif defined(_MSC_VER) /* end !CONFIG_RUNTIME_CPU_DETECT || __APPLE__ || mingw AArch64 */
 /*For GetExceptionCode() and EXCEPTION_ILLEGAL_INSTRUCTION.*/
 #define WIN32_LEAN_AND_MEAN
 #define WIN32_EXTRA_LEAN
