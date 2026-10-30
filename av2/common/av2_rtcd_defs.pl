@@ -108,9 +108,9 @@ specialize qw/av2_fill_tskip_feature_accumulator avx2/;
 
 # Non-separable Wiener filter
 add_proto qw/void av2_convolve_symmetric_highbd/, "const uint16_t *dgd, int stride, const NonsepFilterConfig *filter_config, const int16_t *filter, uint16_t *dst, int dst_stride, int bit_depth, int block_row_begin, int block_row_end, int block_col_begin, int block_col_end";
-specialize qw/av2_convolve_symmetric_highbd avx2/;
+specialize qw/av2_convolve_symmetric_highbd avx2 neon/;
 add_proto qw/void av2_convolve_symmetric_subtract_center_highbd/, "const uint16_t *dgd, int stride, const NonsepFilterConfig *filter_config, const int16_t *filter, uint16_t *dst, int dst_stride, int bit_depth, int block_row_begin, int block_row_end, int block_col_begin, int block_col_end";
-specialize qw/av2_convolve_symmetric_subtract_center_highbd avx2/;
+specialize qw/av2_convolve_symmetric_subtract_center_highbd avx2 neon/;
 add_proto qw/void av2_convolve_symmetric_dual_highbd/, "const uint16_t *dgd, int dgd_stride, const uint16_t *dgd_dual, int dgd_dual_stride, const NonsepFilterConfig *filter_config, const int16_t *filter, uint16_t *dst, int dst_stride, int bit_depth, int block_row_begin, int block_row_end, int block_col_begin, int block_col_end";
 specialize qw/av2_convolve_symmetric_dual_highbd avx2/;
 add_proto qw/void av2_convolve_symmetric_dual_subtract_center_highbd/, "const uint16_t *dgd, int dgd_stride, const uint16_t *dgd_dual, int dgd_dual_stride, const NonsepFilterConfig *filter_config, const int16_t *filter, uint16_t *dst, int dst_stride, int bit_depth, int block_row_begin, int block_row_end, int block_col_begin, int block_col_end";
