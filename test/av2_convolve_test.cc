@@ -1395,6 +1395,11 @@ INSTANTIATE_TEST_SUITE_P(AVX2, AV2ConvolveNonSep2DHighbdTest,
                          BuildHighbdParams(av2_convolve_symmetric_highbd_avx2));
 #endif
 
+#if HAVE_NEON
+INSTANTIATE_TEST_SUITE_P(NEON, AV2ConvolveNonSep2DHighbdTest,
+                         BuildHighbdParams(av2_convolve_symmetric_highbd_neon));
+#endif
+
 GTEST_ALLOW_UNINSTANTIATED_PARAMETERIZED_TEST(AV2ConvolveNonSep2DHighbdTest);
 
 class AV2ConvolveWienerNonSep2DHighbdTest
@@ -1411,6 +1416,12 @@ TEST_P(AV2ConvolveWienerNonSep2DHighbdTest, DISABLED_Speed) {
 INSTANTIATE_TEST_SUITE_P(
     AVX2, AV2ConvolveWienerNonSep2DHighbdTest,
     BuildHighbdParams(av2_convolve_symmetric_subtract_center_highbd_avx2));
+#endif
+
+#if HAVE_NEON
+INSTANTIATE_TEST_SUITE_P(
+    NEON, AV2ConvolveWienerNonSep2DHighbdTest,
+    BuildHighbdParams(av2_convolve_symmetric_subtract_center_highbd_neon));
 #endif
 
 GTEST_ALLOW_UNINSTANTIATED_PARAMETERIZED_TEST(
