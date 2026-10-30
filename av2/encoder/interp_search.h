@@ -117,6 +117,12 @@ typedef struct {
    */
   int skip_motion_mode;
   /*!
+   * Realtime non-RD decision: when nonzero, the only DRL indices (bit i for
+   * index i) that handle_inter_mode() searches; the simple translation
+   * search that would otherwise pick them is skipped.
+   */
+  int nonrd_drl_mask;
+  /*!
    * A pointer to the first element in an array of INTERINTRA_MODE types. This
    * contains the best inter_intra mode for each reference frame.
    */

@@ -4004,6 +4004,18 @@ static int ref_mv_idx_to_search(AV2_COMP *const cpi, MACROBLOCK *x,
   return result;
 }
 
+// ref_mv_idx_to_search(), unless the realtime non-RD decision already chose
+// the DRL indices to search.
+static int ref_mv_idx_mask(AV2_COMP *const cpi, MACROBLOCK *x,
+                           RD_STATS *rd_stats, HandleInterModeArgs *const args,
+                           int64_t ref_best_rd, inter_mode_info *mode_info,
+                           BLOCK_SIZE bsize, const int *ref_set,
+                           const int flex_mv_cost) {
+  if (args->nonrd_drl_mask) return args->nonrd_drl_mask;
+  return ref_mv_idx_to_search(cpi, x, rd_stats, args, ref_best_rd, mode_info,
+                              bsize, ref_set, flex_mv_cost);
+}
+
 /*!\brief Motion mode information for inter mode search speedup.
  *
  * Used in a speed feature to search motion modes other than
@@ -5313,7 +5325,7 @@ static int64_t handle_inter_mode(
       mbmi->bawp_flag[0] = 0;
       mbmi->bawp_flag[1] = 0;
 
-      idx_mask[0][pb_mv_precision] = ref_mv_idx_to_search(
+      idx_mask[0][pb_mv_precision] = ref_mv_idx_mask(
           cpi, x, rd_stats, args, ref_best_rd, mode_info[0][pb_mv_precision],
           bsize, ref_set, flex_mv_cost[pb_mv_precision]);
 
@@ -5322,9 +5334,9 @@ static int64_t handle_inter_mode(
         for (int bawp = 1; bawp < BAWP_OPTION_CNT; bawp++) {
           mbmi->bawp_flag[0] = bawp;
           idx_mask[bawp][pb_mv_precision] =
-              ref_mv_idx_to_search(cpi, x, rd_stats, args, ref_best_rd,
-                                   mode_info[bawp][pb_mv_precision], bsize,
-                                   ref_set, flex_mv_cost[pb_mv_precision]);
+              ref_mv_idx_mask(cpi, x, rd_stats, args, ref_best_rd,
+                              mode_info[bawp][pb_mv_precision], bsize, ref_set,
+                              flex_mv_cost[pb_mv_precision]);
         }
         mbmi->bawp_flag[0] = 0;
       }
@@ -5338,7 +5350,7 @@ static int64_t handle_inter_mode(
     mbmi->bawp_flag[0] = 0;
     mbmi->bawp_flag[1] = 0;
 
-    idx_mask[0][mbmi->max_mv_precision] = ref_mv_idx_to_search(
+    idx_mask[0][mbmi->max_mv_precision] = ref_mv_idx_mask(
         cpi, x, rd_stats, args, ref_best_rd,
         mode_info[0][mbmi->max_mv_precision], bsize, ref_set, 0);
 
@@ -5346,7 +5358,7 @@ static int64_t handle_inter_mode(
         av2_allow_bawp(cm, mbmi, xd->mi_row, xd->mi_col)) {
       for (int bawp = 1; bawp < BAWP_OPTION_CNT; bawp++) {
         mbmi->bawp_flag[0] = bawp;
-        idx_mask[bawp][mbmi->max_mv_precision] = ref_mv_idx_to_search(
+        idx_mask[bawp][mbmi->max_mv_precision] = ref_mv_idx_mask(
             cpi, x, rd_stats, args, ref_best_rd,
             mode_info[bawp][mbmi->max_mv_precision], bsize, ref_set, 0);
       }
@@ -8932,6 +8944,12 @@ static unsigned int nonrd_fullpel_sad(const AV2_COMP *cpi, const MACROBLOCK *x,
                                       const struct buf_2d *pre,
                                       FULLPEL_MV mv) {
   const struct buf_2d *src = &x->plane[AVM_PLANE_Y].src;
+  // Every other row (doubled): ranks full-pel vectors as well at half the
+  // cost.
+  if (cpi->fn_ptr[bsize].sdsf && block_size_high[bsize] >= 16)
+    return 2 * cpi->fn_ptr[bsize].sdsf(src->buf, src->stride,
+                                       pre->buf + mv.row * pre->stride + mv.col,
+                                       pre->stride);
   return cpi->fn_ptr[bsize].sdf(src->buf, src->stride,
                                 pre->buf + mv.row * pre->stride + mv.col,
                                 pre->stride);
@@ -8940,6 +8958,55 @@ static unsigned int nonrd_fullpel_sad(const AV2_COMP *cpi, const MACROBLOCK *x,
 static int fullmv_in_limits(const FULLPEL_MV *mv, const FullMvLimits *l) {
   return mv->col >= l->col_min && mv->col <= l->col_max &&
          mv->row >= l->row_min && mv->row <= l->row_max;
+}
+
+// Realtime: a short full-pel search on one reference: the best of the given
+// start vectors, zero and the superblock's estimate by SAD, then a 4/2/1-pel
+// cross around it.
+static FULLPEL_MV nonrd_fullpel_search(const AV2_COMP *cpi, const MACROBLOCK *x,
+                                       BLOCK_SIZE bsize,
+                                       const struct buf_2d *pre,
+                                       const MV *start, int num_start,
+                                       unsigned int *sad_out) {
+  static const FULLPEL_MV cross[4] = {
+    { -1, 0 }, { 1, 0 }, { 0, -1 }, { 0, 1 }
+  };
+  FULLPEL_MV cand[4];
+  int n = 0;
+  for (int i = 0; i < num_start; ++i) cand[n++] = get_fullmv_from_mv(&start[i]);
+  cand[n++] = kZeroFullMv;
+  cand[n++] = x->sb_me_valid ? x->sb_me_mv.as_fullmv : kZeroFullMv;
+  FULLPEL_MV best = kZeroFullMv;
+  unsigned int best_sad = UINT_MAX;
+  for (int c = 0; c < n; ++c) {
+    clamp_fullmv(&cand[c], &x->mv_limits);
+    // A repeated start has the same SAD and cannot win.
+    int seen = 0;
+    for (int d = 0; d < c; ++d)
+      seen |= cand[d].row == cand[c].row && cand[d].col == cand[c].col;
+    if (seen) continue;
+    const unsigned int sad = nonrd_fullpel_sad(cpi, x, bsize, pre, cand[c]);
+    if (sad < best_sad) best_sad = sad, best = cand[c];
+  }
+  for (int step = 4; step >= 1; step >>= 1) {
+    int back = -1;  // The previous center, already known to be worse.
+    for (int it = 0; it < 4; ++it) {
+      const FULLPEL_MV center = best;
+      int moved = -1;
+      for (int k = 0; k < 4; ++k) {
+        if (k == back) continue;
+        const FULLPEL_MV mv = { center.row + cross[k].row * step,
+                                center.col + cross[k].col * step };
+        if (!fullmv_in_limits(&mv, &x->mv_limits)) continue;
+        const unsigned int sad = nonrd_fullpel_sad(cpi, x, bsize, pre, mv);
+        if (sad < best_sad) best_sad = sad, best = mv, moved = k;
+      }
+      if (moved < 0) break;
+      back = moved ^ 1;
+    }
+  }
+  if (sad_out) *sad_out = best_sad;
+  return best;
 }
 
 // Realtime: picks the one reference to run the NEWMV motion search on. On
@@ -8955,8 +9022,6 @@ static MV_REFERENCE_FRAME nonrd_pick_newmv_ref(
   const AV2_COMMON *const cm = &cpi->common;
   MACROBLOCKD *const xd = &x->e_mbd;
   MB_MODE_INFO *const mbmi = xd->mi[0];
-  static const FULLPEL_MV cross[4] = { { -1, 0 }, { 1, 0 }, { 0, -1 },
-                                       { 0, 1 } };
   MV_REFERENCE_FRAME best_ref = NONE_FRAME;
   int64_t best_rd = INT64_MAX;
   for (MV_REFERENCE_FRAME ref = 0; ref < cm->ref_frames_info.num_total_refs;
@@ -8967,29 +9032,8 @@ static MV_REFERENCE_FRAME nonrd_pick_newmv_ref(
     const struct buf_2d *pre = &yv12_mb[COMPACT_INDEX0_NRS(ref)][0];
     init_mbmi(mbmi, NEWMV, refs, cm, xd, xd->sbi);
     const MV ref_mv = av2_get_ref_mv(x, 0).as_mv;
-    FULLPEL_MV cand[3] = { get_fullmv_from_mv(&ref_mv), kZeroFullMv,
-                           x->sb_me_valid ? x->sb_me_mv.as_fullmv
-                                          : kZeroFullMv };
-    FULLPEL_MV best = kZeroFullMv;
-    unsigned int best_sad = UINT_MAX;
-    for (int c = 0; c < 3; ++c) {
-      clamp_fullmv(&cand[c], &x->mv_limits);
-      const unsigned int sad = nonrd_fullpel_sad(cpi, x, bsize, pre, cand[c]);
-      if (sad < best_sad) best_sad = sad, best = cand[c];
-    }
-    for (int step = 4; step >= 1; step >>= 1) {
-      for (int it = 0; it < 4; ++it) {
-        const FULLPEL_MV center = best;
-        for (int k = 0; k < 4; ++k) {
-          const FULLPEL_MV mv = { center.row + cross[k].row * step,
-                                  center.col + cross[k].col * step };
-          if (!fullmv_in_limits(&mv, &x->mv_limits)) continue;
-          const unsigned int sad = nonrd_fullpel_sad(cpi, x, bsize, pre, mv);
-          if (sad < best_sad) best_sad = sad, best = mv;
-        }
-        if (best.row == center.row && best.col == center.col) break;
-      }
-    }
+    const FULLPEL_MV best =
+        nonrd_fullpel_search(cpi, x, bsize, pre, &ref_mv, 1, NULL);
     // The vector and its difference to the predicted one must fit the
     // block's MV precision, which can be coarser than full-pel.
     MV coded_ref_mv = ref_mv;
@@ -9013,6 +9057,291 @@ static MV_REFERENCE_FRAME nonrd_pick_newmv_ref(
     if (this_rd < best_rd) best_rd = this_rd, best_ref = ref;
   }
   return best_ref;
+}
+
+// Realtime non-RD inter decision: one scored single-reference candidate.
+typedef struct {
+  int64_t rd;
+  PREDICTION_MODE mode;
+  MV_REFERENCE_FRAME ref;
+  int drl;
+} NonrdInterCand;
+
+// At most rt_sf.nonrd_inter_cands candidates plus one spare.
+#define NONRD_MAX_INTER_CANDS 4
+
+// Inserts a candidate into top[0..num-1], kept sorted by rd.
+static void nonrd_keep_best(NonrdInterCand *top, int num, int64_t rd,
+                            PREDICTION_MODE mode, MV_REFERENCE_FRAME ref,
+                            int drl) {
+  int i = num - 1;
+  if (rd >= top[i].rd) return;
+  for (; i > 0 && rd < top[i - 1].rd; --i) top[i] = top[i - 1];
+  top[i].rd = rd;
+  top[i].mode = mode;
+  top[i].ref = ref;
+  top[i].drl = drl;
+}
+
+// The model RD of the current block predicted with vector mv from the
+// reference in xd->plane[].pre[0], plus side_rate: the SSE of every plane is
+// taken straight from the reference with the bilinear sub-pixel variance
+// (no prediction is built) and turned into rate and distortion by the
+// curve-fit model. A luma SSE the caller already has is passed in luma_sse
+// (-1: compute it). Stops early with INT64_MAX once the score reaches
+// bound: every plane only adds to it.
+static int64_t nonrd_model_rd(const AV2_COMP *cpi, const MACROBLOCK *x, MV mv,
+                              int64_t luma_sse, int side_rate, int64_t bound) {
+  const MACROBLOCKD *const xd = &x->e_mbd;
+  const MB_MODE_INFO *const mbmi = xd->mi[0];
+  int64_t rate_sum = side_rate, dist_sum = 0;
+  const int num_planes = xd->is_chroma_ref ? av2_num_planes(&cpi->common) : 1;
+  for (int plane = 0; plane < num_planes; ++plane) {
+    if (RDCOST(x->rdmult, rate_sum, dist_sum) >= bound) return INT64_MAX;
+    const struct macroblockd_plane *const pd = &xd->plane[plane];
+    const struct macroblock_plane *const p = &x->plane[plane];
+    const BLOCK_SIZE plane_bsize = get_mb_plane_block_size(
+        xd, mbmi, plane, pd->subsampling_x, pd->subsampling_y);
+    int64_t sse = plane == 0 ? luma_sse : -1;
+    if (sse < 0) {
+      // The vector in 1/16 of a pixel of this plane (MVs are 1/8 luma pel).
+      const int r16 = (mv.row * 2) >> pd->subsampling_y;
+      const int c16 = (mv.col * 2) >> pd->subsampling_x;
+      const uint16_t *ref =
+          pd->pre[0].buf + (r16 >> 4) * pd->pre[0].stride + (c16 >> 4);
+      const int fr = (r16 & 15) >> 1, fc = (c16 & 15) >> 1;
+      unsigned int usse;
+      if (fr || fc)
+        cpi->fn_ptr[plane_bsize].svf(ref, pd->pre[0].stride, fc, fr, p->src.buf,
+                                     p->src.stride, &usse);
+      else
+        cpi->fn_ptr[plane_bsize].vf(ref, pd->pre[0].stride, p->src.buf,
+                                    p->src.stride, &usse);
+      sse = usse;  // Normalized to 8 bits by the variance function.
+    }
+    int rate;
+    int64_t dist;
+    model_rd_with_curvfit(
+        cpi, x, plane_bsize, plane, sse,
+        block_size_wide[plane_bsize] * block_size_high[plane_bsize], &rate,
+        &dist);
+    rate_sum += rate;
+    dist_sum += dist;
+  }
+  return RDCOST(x->rdmult, rate_sum, dist_sum);
+}
+
+// MVs are in 1/8 pel.
+static int subpel_mv_in_limits(const MV *mv, const FullMvLimits *l) {
+  const FULLPEL_MV lo = { mv->row >> 3, mv->col >> 3 };
+  const FULLPEL_MV hi = { (mv->row + 7) >> 3, (mv->col + 7) >> 3 };
+  return fullmv_in_limits(&lo, l) && fullmv_in_limits(&hi, l);
+}
+
+// Refines a full-pel vector by one half-pel cross step (bilinear SSE) when
+// the block's MV precision allows it; returns the vector and its luma SSE.
+static MV nonrd_halfpel_refine(const AV2_COMP *cpi, const MACROBLOCK *x,
+                               BLOCK_SIZE bsize, const struct buf_2d *pre,
+                               FULLPEL_MV full, MvSubpelPrecision precision,
+                               int64_t *luma_sse) {
+  static const MV cross[4] = { { -4, 0 }, { 4, 0 }, { 0, -4 }, { 0, 4 } };
+  const struct buf_2d *src = &x->plane[AVM_PLANE_Y].src;
+  const avm_variance_fn_ptr_t *vfp = &cpi->fn_ptr[bsize];
+  MV best = get_mv_from_fullmv(&full);
+  unsigned int best_sse;
+  vfp->vf(pre->buf + full.row * pre->stride + full.col, pre->stride, src->buf,
+          src->stride, &best_sse);
+  if (precision >= MV_PRECISION_HALF_PEL) {
+    const MV center = best;
+    for (int k = 0; k < 4; ++k) {
+      const MV mv = { (MV_COMP_DATA_TYPE)(center.row + cross[k].row),
+                      (MV_COMP_DATA_TYPE)(center.col + cross[k].col) };
+      if (!subpel_mv_in_limits(&mv, &x->mv_limits)) continue;
+      unsigned int sse;
+      vfp->svf(pre->buf + (mv.row >> 3) * pre->stride + (mv.col >> 3),
+               pre->stride, mv.col & 7, mv.row & 7, src->buf, src->stride,
+               &sse);
+      if (sse < best_sse) best_sse = sse, best = mv;
+    }
+  }
+  *luma_sse = best_sse;
+  return best;
+}
+
+// Realtime non-RD inter decision (rt_sf.nonrd_inter_cands): on every
+// available single reference, scores NEARMV with each of the first four DRL
+// indices (distinct vectors only), GLOBALMV (when no predicted vector equals
+// it, as handle_inter_mode() skips it then) and NEWMV (a short full-pel
+// search plus one half-pel step, coded against the cheaper of the first two
+// predicted vectors) by the model RD of nonrd_model_rd() plus the reference,
+// mode, DRL and MV bits. Keeps the best num_top in top[] (rd INT64_MAX where
+// fewer were scored).
+// Scores NEWMV on reference ref: a short full-pel search (or the given
+// full-pel vector), one half-pel step, and the cheaper of the first two
+// predicted vectors to code it against.
+static void nonrd_score_newmv(
+    const AV2_COMP *cpi, MACROBLOCK *x, BLOCK_SIZE bsize,
+    struct buf_2d yv12_mb[SINGLE_REF_FRAMES][MAX_MB_PLANE],
+    const unsigned int *ref_costs_single, MV_REFERENCE_FRAME ref,
+    const FULLPEL_MV *full_in, NonrdInterCand *top, int num_top) {
+  const AV2_COMMON *const cm = &cpi->common;
+  MACROBLOCKD *const xd = &x->e_mbd;
+  MB_MODE_INFO *const mbmi = xd->mi[0];
+  const MB_MODE_INFO_EXT *const mbmi_ext = x->mbmi_ext;
+  const ModeCosts *const mode_costs = &x->mode_costs;
+  const int max_drl_bits = cm->features.max_drl_bits;
+  const MV_REFERENCE_FRAME refs[2] = { ref, NONE_FRAME };
+  const struct buf_2d *pre = &yv12_mb[COMPACT_INDEX0_NRS(ref)][0];
+  const int ref_cost = (int)ref_costs_single[COMPACT_INDEX0_NRS(ref)];
+  for (int plane = 0; plane < av2_num_planes(cm); ++plane)
+    xd->plane[plane].pre[0] = yv12_mb[COMPACT_INDEX0_NRS(ref)][plane];
+  // NEWMV: one vector, coded against the cheaper of the first two
+  // predicted vectors.
+  init_mbmi(mbmi, NEWMV, refs, cm, xd, xd->sbi);
+  mbmi->use_amvd = 0;
+  const int num_drl = AVMMIN(
+      2, get_drl_refmv_count(max_drl_bits, x, mbmi->ref_frame, NEWMV, 0));
+  MV pred_mv[2];
+  for (int drl = 0; drl < num_drl; ++drl) {
+    mbmi->ref_mv_idx[0] = drl;
+    pred_mv[drl] = av2_get_ref_mv(x, 0).as_mv;
+  }
+  const FULLPEL_MV full =
+      full_in ? *full_in
+              : nonrd_fullpel_search(cpi, x, bsize, pre, pred_mv, num_drl,
+                                     NULL);
+  int64_t luma_sse;
+  MV mv = nonrd_halfpel_refine(cpi, x, bsize, pre, full,
+                               mbmi->pb_mv_precision, &luma_sse);
+  MV coarse = mv;
+  lower_mv_precision(&mv, mbmi->pb_mv_precision);
+  // The SSE belongs to the vector before any rounding to the precision.
+  if (mv.row != coarse.row || mv.col != coarse.col) luma_sse = -1;
+  int best_side_rate = INT_MAX;
+  int best_drl = 0;
+  for (int drl = 0; drl < num_drl; ++drl) {
+    MV coded_pred = pred_mv[drl];
+    lower_mv_precision(&coded_pred, mbmi->pb_mv_precision);
+    // A zero difference is NEARMV's vector at a higher cost.
+    if (coded_pred.row == mv.row && coded_pred.col == mv.col) continue;
+    mbmi->ref_mv_idx[0] = drl;
+    const int side_rate =
+        get_drl_cost(max_drl_bits, mbmi, mbmi_ext, x) +
+        av2_mv_bit_cost(&mv, &coded_pred, mbmi->pb_mv_precision, &x->mv_costs,
+                        MV_COST_WEIGHT, 0);
+    if (side_rate < best_side_rate)
+      best_side_rate = side_rate, best_drl = drl;
+  }
+  if (best_side_rate == INT_MAX) return;
+  mbmi->ref_mv_idx[0] = best_drl;
+  const int16_t mode_ctx =
+      av2_mode_context_analyzer(mbmi_ext->mode_context, mbmi->ref_frame);
+  const int rate =
+      ref_cost + best_side_rate +
+      cost_prediction_mode(mode_costs, NEWMV, cm, mbmi, xd, mode_ctx);
+  nonrd_keep_best(
+      top, num_top,
+      nonrd_model_rd(cpi, x, mv, luma_sse, rate, top[num_top - 1].rd), NEWMV,
+      ref, best_drl);
+}
+
+static void nonrd_score_inter_cands(
+    const AV2_COMP *cpi, MACROBLOCK *x, BLOCK_SIZE bsize,
+    struct buf_2d yv12_mb[SINGLE_REF_FRAMES][MAX_MB_PLANE],
+    const unsigned int *ref_costs_single, NonrdInterCand *top, int num_top) {
+  const AV2_COMMON *const cm = &cpi->common;
+  MACROBLOCKD *const xd = &x->e_mbd;
+  MB_MODE_INFO *const mbmi = xd->mi[0];
+  const MB_MODE_INFO_EXT *const mbmi_ext = x->mbmi_ext;
+  const ModeCosts *const mode_costs = &x->mode_costs;
+  const int max_drl_bits = cm->features.max_drl_bits;
+  const int num_planes = av2_num_planes(cm);
+  for (int i = 0; i < num_top; ++i) {
+    top[i].rd = INT64_MAX;
+    top[i].mode = MODE_INVALID;
+    top[i].ref = NONE_FRAME;
+    top[i].drl = 0;
+  }
+  const int best_ref_only = cpi->sf.rt_sf.nonrd_newmv_best_ref;
+  unsigned int best_full_sad = UINT_MAX;
+  MV_REFERENCE_FRAME best_full_ref = NONE_FRAME;
+  FULLPEL_MV best_full = kZeroFullMv;
+  for (MV_REFERENCE_FRAME ref = 0; ref < cm->ref_frames_info.num_total_refs;
+       ++ref) {
+    if (!(cm->ref_frame_flags & (1 << ref))) continue;
+    if (cm->bru.enabled && cm->bru.update_ref_idx == ref) continue;
+    const MV_REFERENCE_FRAME refs[2] = { ref, NONE_FRAME };
+    const struct buf_2d *pre = &yv12_mb[COMPACT_INDEX0_NRS(ref)][0];
+    const int ref_cost = (int)ref_costs_single[COMPACT_INDEX0_NRS(ref)];
+    for (int plane = 0; plane < num_planes; ++plane)
+      xd->plane[plane].pre[0] = yv12_mb[COMPACT_INDEX0_NRS(ref)][plane];
+
+    // NEARMV and GLOBALMV.
+    static const PREDICTION_MODE fixed_modes[2] = { NEARMV, GLOBALMV };
+    for (int m = 0; m < 2; ++m) {
+      const PREDICTION_MODE mode = fixed_modes[m];
+      init_mbmi(mbmi, mode, refs, cm, xd, xd->sbi);
+      mbmi->use_amvd = 0;
+      const int16_t mode_ctx =
+          av2_mode_context_analyzer(mbmi_ext->mode_context, mbmi->ref_frame);
+      const int mode_cost =
+          cost_prediction_mode(mode_costs, mode, cm, mbmi, xd, mode_ctx);
+      const int num_drl =
+          mode == NEARMV
+              ? AVMMIN(4, get_drl_refmv_count(max_drl_bits, x, mbmi->ref_frame,
+                                              mode, 0))
+              : 1;
+      int_mv seen[4];
+      for (int drl = 0; drl < num_drl; ++drl) {
+        mbmi->ref_mv_idx[0] = drl;
+        seen[drl].as_int = INVALID_MV;  // read below even when skipped
+        int_mv cur_mv[2];
+        if (!build_cur_mv(cur_mv, mode, cm, x,
+                          cpi->sf.inter_sf.skip_repeated_ref_mv))
+          continue;
+        lower_mv_precision(&cur_mv[0].as_mv, mbmi->pb_mv_precision);
+        seen[drl] = cur_mv[0];
+        int repeated = 0;
+        for (int d = 0; d < drl; ++d)
+          repeated |= seen[d].as_int == cur_mv[0].as_int;
+        if (repeated) continue;
+        const int rate = ref_cost + mode_cost +
+                         get_drl_cost(max_drl_bits, mbmi, mbmi_ext, x);
+        nonrd_keep_best(top, num_top,
+                        nonrd_model_rd(cpi, x, cur_mv[0].as_mv, -1, rate,
+                                       top[num_top - 1].rd),
+                        mode, ref, drl);
+      }
+    }
+
+    // NEWMV. With rt_sf.nonrd_newmv_best_ref only the full-pel search runs
+    // here; the reference whose match is best gets the rest after the loop.
+    if (!best_ref_only) {
+      nonrd_score_newmv(cpi, x, bsize, yv12_mb, ref_costs_single, ref, NULL,
+                        top, num_top);
+      continue;
+    }
+    init_mbmi(mbmi, NEWMV, refs, cm, xd, xd->sbi);
+    mbmi->use_amvd = 0;
+    const int num_drl = AVMMIN(
+        2, get_drl_refmv_count(max_drl_bits, x, mbmi->ref_frame, NEWMV, 0));
+    MV pred_mv[2];
+    for (int drl = 0; drl < num_drl; ++drl) {
+      mbmi->ref_mv_idx[0] = drl;
+      pred_mv[drl] = av2_get_ref_mv(x, 0).as_mv;
+    }
+    unsigned int sad;
+    const FULLPEL_MV full =
+        nonrd_fullpel_search(cpi, x, bsize, pre, pred_mv, num_drl, &sad);
+    if (sad < best_full_sad) {
+      best_full_sad = sad;
+      best_full_ref = ref;
+      best_full = full;
+    }
+  }
+  if (best_full_ref != NONE_FRAME)
+    nonrd_score_newmv(cpi, x, bsize, yv12_mb, ref_costs_single, best_full_ref,
+                      &best_full, top, num_top);
 }
 
 void av2_rd_pick_inter_mode_sb(struct AV2_COMP *cpi,
@@ -9349,20 +9678,54 @@ void av2_rd_pick_inter_mode_sb(struct AV2_COMP *cpi,
       !frame_is_sframe(cm) && !thin_4xn_nx4;
 
   const int static_blk = is_rt_static_block(cpi, xd, bsize);
+  // Realtime non-RD decision (camera content): the scored single-reference
+  // candidates are searched best first, until nonrd_k of them gave an RD or
+  // the next one scored more than rt_sf.nonrd_inter_gap percent behind the
+  // best. One spare candidate stands in for one that turns out invalid (a
+  // NEWMV whose search ends on its predicted vector).
+  NonrdInterCand nonrd_top[NONRD_MAX_INTER_CANDS];
+  const int nonrd_k =
+      !static_blk && bsize != BLOCK_4X4 && !features->allow_screen_content_tools
+          ? sf->rt_sf.nonrd_inter_cands
+          : 0;
+  int nonrd_num = AVMMIN(nonrd_k + (nonrd_k > 0), NONRD_MAX_INTER_CANDS);
+  if (nonrd_num) {
+    nonrd_score_inter_cands(cpi, x, bsize, yv12_mb, ref_costs_single, nonrd_top,
+                            nonrd_num);
+    while (nonrd_num && nonrd_top[nonrd_num - 1].rd == INT64_MAX) --nonrd_num;
+  }
+  int nonrd_searched = 0;
   const MV_REFERENCE_FRAME newmv_ref =
-      sf->rt_sf.nonrd_newmv_ref && !static_blk && bsize != BLOCK_4X4
+      sf->rt_sf.nonrd_newmv_ref && !nonrd_num && !static_blk &&
+              bsize != BLOCK_4X4
           ? nonrd_pick_newmv_ref(cpi, x, bsize, yv12_mb, ref_costs_single)
           : NONE_FRAME;
-  for (int mode_refs_pair_idx = 0;
-       mode_refs_pair_idx < ref_frame_centric_eval_order_num;
+  const int num_mode_ref_pairs =
+      nonrd_num ? nonrd_num : ref_frame_centric_eval_order_num;
+  for (int mode_refs_pair_idx = 0; mode_refs_pair_idx < num_mode_ref_pairs;
        ++mode_refs_pair_idx) {
     if (bsize == BLOCK_4X4) break;
-    const PREDICTION_MODE this_mode =
-        ref_frame_centric_eval_order[mode_refs_pair_idx].mode;
-    const MV_REFERENCE_FRAME ref_frame =
-        ref_frame_centric_eval_order[mode_refs_pair_idx].rf0;
-    const MV_REFERENCE_FRAME second_ref_frame =
-        ref_frame_centric_eval_order[mode_refs_pair_idx].rf1;
+    if (nonrd_num && nonrd_searched >= nonrd_k) break;
+    // Candidates scored far behind the best one are not searched.
+    if (nonrd_num && mode_refs_pair_idx > 0 &&
+        nonrd_top[mode_refs_pair_idx].rd >
+            nonrd_top[0].rd + nonrd_top[0].rd / 100 * sf->rt_sf.nonrd_inter_gap)
+      break;
+    MODE_REF_TUPLE entry = ref_frame_centric_eval_order[mode_refs_pair_idx];
+    // The non-RD decision searches its candidates with their DRL index only.
+    args.nonrd_drl_mask = 0;
+    if (nonrd_num) {
+      entry.mode = nonrd_top[mode_refs_pair_idx].mode;
+      entry.rf0 = nonrd_top[mode_refs_pair_idx].ref;
+      entry.rf1 = NONE_FRAME;
+      // NEWMV searches every DRL index ref_mv_idx_to_search() keeps: each
+      // starts its motion search from a different vector.
+      if (entry.mode != NEWMV)
+        args.nonrd_drl_mask = 1 << nonrd_top[mode_refs_pair_idx].drl;
+    }
+    const PREDICTION_MODE this_mode = entry.mode;
+    const MV_REFERENCE_FRAME ref_frame = entry.rf0;
+    const MV_REFERENCE_FRAME second_ref_frame = entry.rf1;
     const int is_comp_mode = (second_ref_frame != NONE_FRAME);
     if (static_blk && (is_comp_mode || ref_frame != 0 ||
                        (this_mode != NEARMV && this_mode != GLOBALMV)))
@@ -9519,6 +9882,7 @@ void av2_rd_pick_inter_mode_sb(struct AV2_COMP *cpi,
         collect_single_states(cm, x, &search_state, mbmi);
 
       if (this_rd == INT64_MAX) continue;
+      ++nonrd_searched;
 
       if (is_single_pred) {
         if (prune_comp_best_single)
@@ -9597,6 +9961,12 @@ void av2_rd_pick_inter_mode_sb(struct AV2_COMP *cpi,
   }
   // A static block found its inter mode; intra stays as the fallback.
   if (static_blk && rd_cost->rdcost < INT64_MAX) is_intra_mode_allowed = 0;
+  // Realtime non-RD decision: intra is the fallback only for small blocks
+  // whose best inter mode still leaves a residual.
+  if (nonrd_k && rd_cost->rdcost < INT64_MAX &&
+      (rd_cost->skip_txfm || block_size_wide[bsize] > 16 ||
+       block_size_high[bsize] > 16))
+    is_intra_mode_allowed = 0;
   av2_evaluate_intra_modes_in_inter_frame(
       cpi, x, bsize, ctx, inter_cost, intra_cost, &search_state, rd_cost,
       intra_ref_frame_cost, is_intra_mode_allowed);

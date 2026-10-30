@@ -1038,6 +1038,22 @@ typedef struct REALTIME_SPEED_FEATURES {
   // full-pel search scores best by the rate/distortion model.
   int nonrd_newmv_ref;
 
+  // Non-RD inter decision for camera content: NEARMV (first four DRL
+  // indices), GLOBALMV and NEWMV (a short full-pel search plus a half-pel
+  // step) of every single reference are scored by the model RD of their
+  // bilinear prediction plus their reference, mode, DRL and MV bits; only
+  // this many best candidates get the full RD search (0: off), and no
+  // compound mode is tried.
+  int nonrd_inter_cands;
+
+  // With nonrd_inter_cands: a candidate after the best one is searched only
+  // when its score is within this many percent of the best one's.
+  int nonrd_inter_gap;
+
+  // With nonrd_inter_cands: NEWMV's full-pel search runs on every reference,
+  // its half-pel step and score only on the one whose match is best.
+  int nonrd_newmv_best_ref;
+
   // With inter_mode_rd_model_estimation, the number of best-modelled
   // candidates that get the transform search (0: all within 25 % of the best).
   int tx_search_top_candidates;
