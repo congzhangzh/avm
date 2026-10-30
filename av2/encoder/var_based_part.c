@@ -586,6 +586,141 @@ static void fill_variance_tree_leaves(MACROBLOCK *x, VP128x128 *vt,
   }
 }
 
+// Realtime superblock motion estimate for the partition decision, after
+// libaom's av1_int_pro_motion_estimation(): the superblock and the
+// reference are reduced to their column sums (a row vector) and row sums (a
+// column vector), and each vector is matched in 1-D. Without it the
+// variances below are those of the zero-motion residual, so any content that
+// moves (a scrolling page above all) splits into the smallest blocks.
+
+// Column sums of a width x height area, scaled to [0, 2 * 255].
+static void int_pro_row(int16_t *hbuf, const uint16_t *ref, int ref_stride,
+                        int width, int height, int norm) {
+  for (int i = 0; i < width; ++i) {
+    int sum = 0;
+    for (int j = 0; j < height; ++j) sum += ref[j * ref_stride + i];
+    hbuf[i] = (int16_t)(sum >> norm);
+  }
+}
+
+// Row sums of a width x height area, scaled to [0, 255].
+static void int_pro_col(int16_t *vbuf, const uint16_t *ref, int ref_stride,
+                        int width, int height, int norm) {
+  for (int j = 0; j < height; ++j) {
+    int sum = 0;
+    for (int i = 0; i < width; ++i) sum += ref[i];
+    vbuf[j] = (int16_t)(sum >> norm);
+    ref += ref_stride;
+  }
+}
+
+// Variance of the difference of two length-n vectors (n a power of two).
+static int vector_var(const int16_t *ref, const int16_t *src, int n,
+                      int log2_n) {
+  int mean = 0;
+  int64_t sse = 0;
+  for (int i = 0; i < n; ++i) {
+    const int diff = ref[i] - src[i];
+    mean += diff;
+    sse += diff * diff;
+  }
+  return (int)(sse - (((int64_t)mean * mean) >> log2_n));
+}
+
+// Best offset of src within ref, ref holding range_lo + n + range_hi
+// entries: every offset for screen content, a 16/8/4/2/1 step search
+// otherwise. Returns the offset relative to the centre, -range_lo..range_hi.
+static int vector_match(const int16_t *ref, const int16_t *src, int n,
+                        int log2_n, int range_lo, int range_hi,
+                        int full_search, int *best_var) {
+  const int bw = range_lo + range_hi;
+  int best = INT_MAX, center = 0;
+  if (full_search) {
+    for (int d = 0; d <= bw; d++) {
+      const int v = vector_var(&ref[d], src, n, log2_n);
+      if (v < best) best = v, center = d;
+    }
+  } else {
+    for (int d = 0; d <= bw; d += 16) {
+      const int v = vector_var(&ref[d], src, n, log2_n);
+      if (v < best) best = v, center = d;
+    }
+    for (int step = 8; step >= 1; step >>= 1) {
+      const int offset = center;
+      for (int d = -step; d <= step; d += 2 * step) {
+        const int pos = offset + d;
+        if (pos < 0 || pos > bw) continue;
+        const int v = vector_var(&ref[pos], src, n, log2_n);
+        if (v < best) best = v, center = pos;
+      }
+    }
+  }
+  *best_var = best;
+  return center - range_lo;
+}
+
+// Estimates a full-pel motion vector for the superblock at (mi_row, mi_col)
+// against pre[0] (set up by setup_planes()) and returns its SAD, or UINT_MAX
+// when the superblock is not wholly inside the frame.
+static unsigned int sb_motion_estimate(AV2_COMP *cpi, MACROBLOCK *x,
+                                       const YV12_BUFFER_CONFIG *ref,
+                                       int mi_row, int mi_col,
+                                       FULLPEL_MV *mv) {
+  const AV2_COMMON *const cm = &cpi->common;
+  MACROBLOCKD *const xd = &x->e_mbd;
+  const BLOCK_SIZE bsize = cm->sb_size;
+  const int bw = block_size_wide[bsize];
+  const int bh = block_size_high[bsize];
+  const int x0 = mi_col * MI_SIZE;
+  const int y0 = mi_row * MI_SIZE;
+  if (x0 + bw > cm->width || y0 + bh > cm->height) return UINT_MAX;
+  const int is_screen = cpi->oxcf.tune_cfg.content == AVM_CONTENT_SCREEN;
+  // Screen content scrolls far, mostly vertically; search more there. Keep
+  // every read inside the reference's border, in steps of 16.
+  const int border = ref->border - 16;
+  int left = is_screen ? 96 : bw >> 1, right = left;
+  int top = is_screen ? 192 : bh >> 1, bottom = top;
+  left = AVMMIN(left, x0 + border) & ~15;
+  right = AVMMIN(right, cm->width + border - x0 - bw) & ~15;
+  top = AVMMIN(top, y0 + border) & ~15;
+  bottom = AVMMIN(bottom, cm->height + border - y0 - bh) & ~15;
+  if (left < 0 || right < 0 || top < 0 || bottom < 0) return UINT_MAX;
+
+  const int bd_shift = xd->bd - 8;
+  const int log2_bw = mi_size_wide_log2[bsize] + MI_SIZE_LOG2;
+  const int log2_bh = mi_size_high_log2[bsize] + MI_SIZE_LOG2;
+  const int row_norm = log2_bh - 1 + bd_shift;
+  const int col_norm = log2_bw + bd_shift;
+  int16_t hbuf[MAX_SB_SIZE + 2 * 512], vbuf[MAX_SB_SIZE + 2 * 512];
+  int16_t src_hbuf[MAX_SB_SIZE], src_vbuf[MAX_SB_SIZE];
+  const uint16_t *const src = x->plane[AVM_PLANE_Y].src.buf;
+  const int src_stride = x->plane[AVM_PLANE_Y].src.stride;
+  const uint16_t *const pre = xd->plane[AVM_PLANE_Y].pre[0].buf;
+  const int pre_stride = xd->plane[AVM_PLANE_Y].pre[0].stride;
+
+  int_pro_row(hbuf, pre - left, pre_stride, left + bw + right, bh, row_norm);
+  int_pro_col(vbuf, pre - top * pre_stride, pre_stride, bw, top + bh + bottom,
+              col_norm);
+  int_pro_row(src_hbuf, src, src_stride, bw, bh, row_norm);
+  int_pro_col(src_vbuf, src, src_stride, bw, bh, col_norm);
+
+  int var_col, var_row;
+  mv->col = vector_match(hbuf, src_hbuf, bw, log2_bw, left, right, is_screen,
+                         &var_col);
+  mv->row = vector_match(vbuf, src_vbuf, bh, log2_bh, top, bottom, is_screen,
+                         &var_row);
+  // Screen content moves along one axis at a time.
+  if (is_screen) {
+    if (var_col < var_row)
+      mv->row = 0;
+    else
+      mv->col = 0;
+  }
+  return cpi->fn_ptr[bsize].sdf(src, src_stride,
+                                pre + mv->row * pre_stride + mv->col,
+                                pre_stride);
+}
+
 static void setup_planes(AV2_COMP *cpi, MACROBLOCK *x, unsigned int *y_sad,
                          int mi_row, int mi_col, bool is_small_sb,
                          bool scaled_ref_last) {
@@ -736,6 +871,29 @@ void av2_choose_var_based_partitioning(AV2_COMP *cpi,
     } else {
       dst_buf = xd->plane[AVM_PLANE_Y].pre[0].buf;
       dst_stride = xd->plane[AVM_PLANE_Y].pre[0].stride;
+    }
+    x->sb_me_mv.as_int = 0;
+    x->sb_me_valid = 0;
+    // Superblock motion: a full-pel vector, so the variances can read the
+    // reference pixels it points to without building a prediction. Skipped
+    // when the zero-motion SAD is already small (under 1 a pixel).
+    const int sb_pels = block_size_wide[cm->sb_size] *
+                        block_size_high[cm->sb_size];
+    if (cpi->sf.rt_sf.estimate_motion_for_var_based_partition &&
+        mi->mv[0].as_int == 0 &&
+        y_sad > ((unsigned int)sb_pels << (xd->bd - 8))) {
+      const MV_REFERENCE_FRAME last = get_closest_pastcur_ref_or_ref0(cm);
+      const YV12_BUFFER_CONFIG *ref = get_ref_frame_yv12_buf(cm, last);
+      FULLPEL_MV me_mv = { 0, 0 };
+      const unsigned int me_sad =
+          ref ? sb_motion_estimate(cpi, x, ref, mi_row, mi_col, &me_mv)
+              : UINT_MAX;
+      if ((me_mv.row || me_mv.col) && me_sad < y_sad - (y_sad >> 3)) {
+        y_sad = me_sad;
+        dst_buf += me_mv.row * dst_stride + me_mv.col;
+        x->sb_me_mv.as_fullmv = me_mv;
+        x->sb_me_valid = 1;
+      }
     }
   } else {
     dst_buf = NULL;

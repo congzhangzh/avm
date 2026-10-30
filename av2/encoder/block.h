@@ -1641,6 +1641,11 @@ typedef struct macroblock {
    * fast encoding stage for screen content tool detemination.
    */
   int palette_pixels;
+  /*! \brief Realtime: the superblock's full-pel motion estimate from the
+   * variance-based partition, valid when sb_me_valid is set. */
+  int_mv sb_me_mv;
+  /*! \brief Whether sb_me_mv holds an estimate for this superblock. */
+  int sb_me_valid;
   /*! \brief Whether to prune current transform partition search. */
   int prune_tx_partition;
   /*! \brief Keep records of top rdcosts of transform partition search. */

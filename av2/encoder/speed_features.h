@@ -1025,6 +1025,10 @@ typedef struct REALTIME_SPEED_FEATURES {
   // Use non-rd partition instead of rd partition.
   int use_nonrd_partition;
 
+  // Estimate a full-pel motion vector per superblock (integral projections)
+  // and take the partition variances from the residual it leaves.
+  int estimate_motion_for_var_based_partition;
+
   // Flag to disable all but DC intra mode for inter frame prediction.
   bool use_only_dc_intra_interframe;
 
