@@ -662,6 +662,7 @@ static void set_rt_speed_features_framesize_independent(
     sf->winner_mode_sf.tx_size_search_level = USE_LARGESTALL;
   }
   if (speed >= 7) {
+    sf->rt_sf.static_block_zeromv = 1;
     sf->mv_sf.prune_intrabc_candidate_block_hash_search = 1;
     sf->mv_sf.hash_max_8x8_intrabc_blocks = 1;
     sf->mv_sf.intrabc_search_level = 1;

@@ -1027,6 +1027,12 @@ typedef struct REALTIME_SPEED_FEATURES {
 
   // Flag to disable all but DC intra mode for inter frame prediction.
   bool use_only_dc_intra_interframe;
+
+  // A block whose source equals the previous frame's source, when the nearest
+  // reference is that frame, is searched with single-reference NEARMV and
+  // GLOBALMV from it only: no other reference, compound, intra, palette or
+  // intraBC. Mostly static screens make most blocks like that.
+  int static_block_zeromv;
 } REALTIME_SPEED_FEATURES;
 
 typedef struct FLEXMV_PRECISION_SPEED_FEATURES {

@@ -8883,6 +8883,44 @@ static_assert(sizeof(ref_frame_centric_eval_order) /
               "ref_frame_centric_eval_order size changed; audit callers.");
 
 // TODO(chiyotsai@google.com): See the todo for av2_rd_pick_intra_mode_sb.
+// Realtime: whether this block's source is unchanged since the previous frame
+// and the nearest reference is that frame (see rt_sf.static_block_zeromv).
+static int is_rt_static_block(const AV2_COMP *cpi, const MACROBLOCKD *xd,
+                              BLOCK_SIZE bsize) {
+  const AV2_COMMON *const cm = &cpi->common;
+  if (!cpi->sf.rt_sf.static_block_zeromv || frame_is_intra_only(cm))
+    return 0;
+  const YV12_BUFFER_CONFIG *const cur = cpi->source;
+  const YV12_BUFFER_CONFIG *const last = cpi->unscaled_last_source;
+  if (last == NULL || cm->ref_frames_info.num_total_refs < 1) return 0;
+  if (last->y_crop_width != cur->y_crop_width ||
+      last->y_crop_height != cur->y_crop_height)
+    return 0;
+  const RefCntBuffer *const ref0 = get_ref_frame_buf(cm, 0);
+  if (ref0 == NULL ||
+      ref0->display_order_hint + 1 != cm->cur_frame->display_order_hint)
+    return 0;
+  const int num_planes = av2_num_planes(cm);
+  for (int plane = 0; plane < num_planes; ++plane) {
+    const int ss_x = plane ? cur->subsampling_x : 0;
+    const int ss_y = plane ? cur->subsampling_y : 0;
+    const int x0 = (xd->mi_col * MI_SIZE) >> ss_x;
+    const int y0 = (xd->mi_row * MI_SIZE) >> ss_y;
+    const int pw = plane ? cur->uv_crop_width : cur->y_crop_width;
+    const int ph = plane ? cur->uv_crop_height : cur->y_crop_height;
+    const int w = AVMMIN(block_size_wide[bsize] >> ss_x, pw - x0);
+    const int h = AVMMIN(block_size_high[bsize] >> ss_y, ph - y0);
+    if (w <= 0 || h <= 0) continue;
+    const int cs = plane ? cur->uv_stride : cur->y_stride;
+    const int ls = plane ? last->uv_stride : last->y_stride;
+    const uint16_t *a = cur->buffers[plane] + y0 * cs + x0;
+    const uint16_t *b = last->buffers[plane] + y0 * ls + x0;
+    for (int r = 0; r < h; ++r, a += cs, b += ls)
+      if (memcmp(a, b, w * sizeof(*a))) return 0;
+  }
+  return 1;
+}
+
 void av2_rd_pick_inter_mode_sb(struct AV2_COMP *cpi,
                                struct TileDataEnc *tile_data,
                                struct macroblock *x, struct RD_STATS *rd_cost,
@@ -9216,6 +9254,7 @@ void av2_rd_pick_inter_mode_sb(struct AV2_COMP *cpi,
       cm->features.opfl_refine_type == REFINE_SWITCHABLE &&
       !frame_is_sframe(cm) && !thin_4xn_nx4;
 
+  const int static_blk = is_rt_static_block(cpi, xd, bsize);
   for (int mode_refs_pair_idx = 0;
        mode_refs_pair_idx < ref_frame_centric_eval_order_num;
        ++mode_refs_pair_idx) {
@@ -9227,6 +9266,9 @@ void av2_rd_pick_inter_mode_sb(struct AV2_COMP *cpi,
     const MV_REFERENCE_FRAME second_ref_frame =
         ref_frame_centric_eval_order[mode_refs_pair_idx].rf1;
     const int is_comp_mode = (second_ref_frame != NONE_FRAME);
+    if (static_blk && (is_comp_mode || ref_frame != 0 ||
+                       (this_mode != NEARMV && this_mode != GLOBALMV)))
+      continue;
     const int is_single_pred = !is_comp_mode;
     const int comp_pred = is_comp_mode;
 
@@ -9450,6 +9492,8 @@ void av2_rd_pick_inter_mode_sb(struct AV2_COMP *cpi,
       mbmi->chroma_ref_info.offset_started) {
     is_intra_mode_allowed = 0;
   }
+  // A static block found its inter mode; intra stays as the fallback.
+  if (static_blk && rd_cost->rdcost < INT64_MAX) is_intra_mode_allowed = 0;
   av2_evaluate_intra_modes_in_inter_frame(
       cpi, x, bsize, ctx, inter_cost, intra_cost, &search_state, rd_cost,
       intra_ref_frame_cost, is_intra_mode_allowed);
