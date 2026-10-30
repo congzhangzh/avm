@@ -176,10 +176,10 @@ specialize qw/avm_highbd_convolve8_vert sse2 avx2 neon/;
 # Loopfilter
 #
 add_proto qw/void avm_highbd_lpf_horizontal_generic/, "uint16_t *s, int pitch, int filt_width_neg, int filt_width_pos, const uint16_t *q_thresh, const uint16_t *side_thresh, int bd, int is_lossless_neg, int is_lossless_pos";
-specialize qw/avm_highbd_lpf_horizontal_generic sse4_1/;
+specialize qw/avm_highbd_lpf_horizontal_generic sse4_1 neon/;
 
 add_proto qw/void avm_highbd_lpf_vertical_generic/, "uint16_t *s, int pitch, int filt_width_neg, int filt_width_pos, const uint16_t *q_thresh, const uint16_t *side_thresh, int bd, int is_lossless_neg, int is_lossless_pos";
-specialize qw/avm_highbd_lpf_vertical_generic sse4_1/;
+specialize qw/avm_highbd_lpf_vertical_generic sse4_1 neon/;
 
 #
 # Entropy

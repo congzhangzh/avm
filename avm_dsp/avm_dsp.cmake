@@ -121,6 +121,7 @@ list(
   "${AVM_ROOT}/avm_dsp/arm/avm_convolve_copy_neon.c"
   "${AVM_ROOT}/avm_dsp/arm/fwd_txfm_neon.c"
   "${AVM_ROOT}/avm_dsp/arm/highbd_convolve_neon.c"
+  "${AVM_ROOT}/avm_dsp/arm/highbd_loopfilter_neon.c"
   "${AVM_ROOT}/avm_dsp/arm/loopfilter_neon.c"
   "${AVM_ROOT}/avm_dsp/arm/intrapred_neon.c"
   "${AVM_ROOT}/avm_dsp/arm/subtract_neon.c"
