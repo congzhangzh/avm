@@ -2189,6 +2189,7 @@ static AVM_INLINE void encode_frame_internal(AV2_COMP *cpi) {
       }
     }
 
+    intrabc_hash_info->use_crc32c = cpi->sf.mv_sf.hash_use_crc32c;
     av2_hash_table_init(intrabc_hash_info);
     av2_hash_table_create(&intrabc_hash_info->intrabc_hash_table);
     hash_table_created = 1;

@@ -570,6 +570,10 @@ typedef struct MV_SPEED_FEATURES {
   //   1: only square blocks up to 16x16; the full-pixel search runs only when
   //      the hash search finds nothing.
   int intrabc_search_level;
+
+  // Hash the intraBC blocks with one CRC32C (SSE4.2 where available) instead
+  // of two table-driven 24-bit CRCs.
+  int hash_use_crc32c;
 } MV_SPEED_FEATURES;
 
 typedef struct INTER_MODE_SPEED_FEATURES {

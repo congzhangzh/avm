@@ -52,6 +52,11 @@ typedef struct intrabc_hash_info {
   CRC_CALCULATOR crc_calculator1;
   CRC_CALCULATOR crc_calculator2;
   int g_crc_initialized;
+  // Realtime: one CRC32C per block (SSE4.2 where available) instead of the two
+  // table-driven 24-bit CRCs, as libaom does; the second hash is then the full
+  // CRC32C and the first one its low bits. Set before av2_hash_table_init().
+  int use_crc32c;
+  CRC32C crc32c_calculator;
 } IntraBCHashInfo;
 
 void av2_hash_table_init(IntraBCHashInfo *intra_bc_hash_info);
