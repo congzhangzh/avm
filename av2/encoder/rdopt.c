@@ -9111,8 +9111,7 @@ void av2_rd_pick_inter_mode_sb(struct AV2_COMP *cpi,
   }
 
   // Initialize best mode stats for winner mode processing
-  av2_zero(x->winner_mode_stats);
-  x->winner_mode_count = 0;
+  reset_winner_mode_stats(x);
   const MV_REFERENCE_FRAME init_refs[2] = { -1, -1 };
   store_winner_mode_stats(&cpi->common, x, mbmi, NULL, NULL, NULL, init_refs,
                           MODE_INVALID, NULL, bsize, best_rd_so_far,

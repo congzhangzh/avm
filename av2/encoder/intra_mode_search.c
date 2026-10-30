@@ -1725,8 +1725,7 @@ int64_t av2_rd_pick_intra_sby_mode(const AV2_COMP *const cpi, ThreadData *td,
   mbmi->mapped_intra_mode[0][mbmi->txb_idx] = DC_PRED;
 
   MB_MODE_INFO best_mbmi = *mbmi;
-  av2_zero(x->winner_mode_stats);
-  x->winner_mode_count = 0;
+  reset_winner_mode_stats(x);
   mbmi->use_dpcm_y = 0;
   mbmi->dpcm_mode_y = 0;
   // mbmi->dpcm_angle_delta = 0;

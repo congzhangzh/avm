@@ -13,6 +13,8 @@
 #ifndef AVM_AV2_ENCODER_RDOPT_UTILS_H_
 #define AVM_AV2_ENCODER_RDOPT_UTILS_H_
 
+#include <stddef.h>
+
 #include "avm/avm_integer.h"
 #include "av2/encoder/block.h"
 #include "av2/common/cfl.h"
@@ -413,6 +415,23 @@ static INLINE CFL_ALLOWED_TYPE store_cfl_required_rdo(const AV2_COMMON *cm,
 static AVM_INLINE void init_sbuv_mode(MB_MODE_INFO *const mbmi) {
   mbmi->uv_mode = UV_DC_PRED;
   mbmi->palette_mode_info.palette_size[1] = 0;
+}
+
+// Empties the winner mode list, with every field zeroed as before except the
+// palette color maps: each is MAX_SB_SQUARE bytes, and one is only read for
+// an entry that store_winner_mode_stats() filled from a palette mode, which
+// also stores its map. Zeroing them cost about 200 KB of memset per mode
+// search.
+static INLINE void reset_winner_mode_stats(MACROBLOCK *x) {
+  for (int i = 0; i < (int)(sizeof(x->winner_mode_stats) /
+                            sizeof(x->winner_mode_stats[0]));
+       i++) {
+    WinnerModeStats *const s = &x->winner_mode_stats[i];
+    memset(s, 0, offsetof(WinnerModeStats, color_index_map));
+    s->mode = 0;
+    s->refs[0] = s->refs[1] = 0;
+  }
+  x->winner_mode_count = 0;
 }
 
 // Store best mode stats for winner mode processing
