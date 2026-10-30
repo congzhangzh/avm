@@ -22,11 +22,13 @@ my @REQUIRES;
 my %opts = ();
 my %disabled = ();
 my %required = ();
+my @excluded = ();
 
 my @argv;
 foreach (@ARGV) {
   $disabled{$1} = 1, next if /--disable-(.*)/;
   $required{$1} = 1, next if /--require-(.*)/;
+  push(@excluded, $1), next if /--exclude=(.*)/;
   push @argv, $_;
 }
 
@@ -85,6 +87,8 @@ sub specialize {
   my $fn=$_[0];
   shift;
   foreach my $opt (@_) {
+    # --exclude=REGEX: drop the specializations it matches ("<fn>_<arch>")
+    next if grep { "${fn}_${opt}" =~ /$_/ } @excluded;
     eval "\$${fn}_${opt}=${fn}_${opt}";
   }
 }
@@ -271,12 +275,16 @@ sub x86() {
   common_top;
   print <<EOF;
 #ifdef RTCD_C
+#if CONFIG_RUNTIME_CPU_DETECT
 #include "avm_ports/x86.h"
+#endif
 static void setup_rtcd_internal(void)
 {
+#if CONFIG_RUNTIME_CPU_DETECT
     int flags = x86_simd_caps();
 
     (void)flags;
+#endif
 
 EOF
 
@@ -484,5 +492,6 @@ Options:
   --arch=ARCH       Architecture to generate defs for (required)
   --disable-EXT     Disable support for EXT extensions
   --require-EXT     Require support for EXT extensions
+  --exclude=REGEX   Drop the specializations named <fn>_<ext> that match
   --sym=SYMBOL      Unique symbol to use for RTCD initialization function
   --config=FILE     Path to file containing C preprocessor directives to parse

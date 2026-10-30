@@ -335,6 +335,10 @@ function(setup_avm_dsp_targets)
   endif()
 
   if(HAVE_SSE2)
+    if(EMSCRIPTEN) # C wrappers of the assembly kernels, which are not built
+      list(REMOVE_ITEM AVM_DSP_COMMON_INTRIN_SSE2
+           "${AVM_ROOT}/avm_dsp/x86/avm_asm_stubs.c")
+    endif()
     add_asm_library("avm_dsp_common_sse2" "AVM_DSP_COMMON_ASM_SSE2")
     add_intrinsics_object_library("-msse2" "sse2" "avm_dsp_common"
                                   "AVM_DSP_COMMON_INTRIN_SSE2")
