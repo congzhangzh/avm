@@ -467,7 +467,13 @@ static INLINE void init_encode_rd_sb(AV2_COMP *cpi, ThreadData *td,
 
   // Reset hash state for transform/mode rd hash information
   reset_hash_records(&x->txfm_search_info);
-  av2_zero(x->picked_ref_frames_mask);
+  // Only prune_ref_frames reads and writes this mask, and only its first
+  // mib_size * mib_size entries; clearing all 32 KB for every superblock was
+  // a measurable share of realtime encoding.
+  if (sf->inter_sf.prune_ref_frames) {
+    memset(x->picked_ref_frames_mask, 0,
+           cm->mib_size * cm->mib_size * sizeof(*x->picked_ref_frames_mask));
+  }
   av2_invalid_rd_stats(rd_cost);
   if (sf->part_sf.partition_search_type != VAR_BASED_PARTITION &&
       sf->part_sf.partition_search_type != FIXED_PARTITION) {
