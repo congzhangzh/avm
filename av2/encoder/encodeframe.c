@@ -2301,7 +2301,7 @@ static AVM_INLINE void encode_frame_internal(AV2_COMP *cpi) {
   av2_setup_ref_frame_sides(cm);
   if (features->allow_ref_frame_mvs) {
     cm->tmvp_sample_step = -1;
-    av2_setup_motion_field(cm);
+    av2_setup_motion_field_mt(cpi);
     if (cm->tmvp_sample_step < 0) {
       cm->tmvp_sample_step = 1;
       cm->tmvp_sample_stepl2 = 0;

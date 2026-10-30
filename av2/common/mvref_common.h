@@ -503,6 +503,30 @@ static AVM_INLINE void get_mv_projection(MV *output, MV ref, int num, int den) {
 void av2_setup_frame_buf_refs(AV2_COMMON *cm);
 void av2_setup_skip_mode_allowed(AV2_COMMON *cm);
 void av2_setup_motion_field(AV2_COMMON *cm);
+
+#define MFMV_STACK_SIZE 4  // The total limit of motion field candidates.
+
+struct ProcessRefTMVP {
+  int side;  // 0 means right to left, 1 means left to right.
+  int start_frame;
+  int target_frame;
+};
+
+// The projections av2_setup_motion_field() runs, split so that an encoder
+// can run them on several threads: a block only projects into its own band
+// of av2_motion_field_band_rows() rows (MAX_OFFSET_HEIGHT is 0), so bands are
+// independent and each band done in row order gives the serial result.
+typedef struct MotionFieldPlan {
+  struct ProcessRefTMVP ref[MFMV_STACK_SIZE];
+  int count;
+} MotionFieldPlan;
+
+// Returns 0 when there is nothing to project.
+int av2_plan_motion_field(AV2_COMMON *cm, MotionFieldPlan *plan);
+int av2_motion_field_band_rows(const AV2_COMMON *cm);
+void av2_project_motion_field_rows(AV2_COMMON *cm, const MotionFieldPlan *plan,
+                                   int row_start, int row_end);
+void av2_finish_motion_field(AV2_COMMON *cm);
 void av2_setup_ref_frame_sides(AV2_COMMON *cm);
 
 static INLINE void av2_collect_neighbors_ref_counts(MACROBLOCKD *const xd) {

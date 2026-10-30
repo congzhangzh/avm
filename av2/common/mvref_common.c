@@ -51,7 +51,6 @@ enum {
 } UENUM1BYTE(BLOCK_WIDTH_TYPE);
 
 #define TIP_MFMV_STACK_SIZE 3  // The limit for original TMVP w/ TIP.
-#define MFMV_STACK_SIZE 4      // The total limit of motion field candidates.
 
 // Check and make sure that the MVs are stored to the correct slots.
 static INLINE void check_frame_mv_slot(const AV2_COMMON *const cm, MV_REF *mv) {
@@ -3064,12 +3063,6 @@ static int has_past_ref(const AV2_COMMON *cm, int rf) {
 }
 
 // Struct to store the reference frame motion field candidates.
-struct ProcessRefTMVP {
-  int side;  // 0 means right to left, 1 means left to right.
-  int start_frame;
-  int target_frame;
-};
-
 // Add a reference frame motion field candidate, if we have not reached the
 // maximum allowed.
 static void check_and_add_process_ref(const AV2_COMMON *cm, int max_check,
@@ -3255,7 +3248,8 @@ __attribute__((noinline))
 #endif
 static int
 motion_field_projection_side(AV2_COMMON *cm, MV_REFERENCE_FRAME start_frame,
-                             MV_REFERENCE_FRAME target_frame, int side_idx) {
+                             MV_REFERENCE_FRAME target_frame, int side_idx,
+                             int row_start, int row_end) {
   int ref_offset[INTER_REFS_PER_FRAME] = { 0 };
 
   const RefCntBuffer *const start_frame_buf =
@@ -3323,7 +3317,7 @@ motion_field_projection_side(AV2_COMMON *cm, MV_REFERENCE_FRAME start_frame,
   (void)mvs_rows;
 
   assert(cm->tmvp_sample_step > 0);
-  for (int blk_row = 0; blk_row < start_mvs_rows;
+  for (int blk_row = row_start; blk_row < AVMMIN(row_end, start_mvs_rows);
        blk_row += cm->tmvp_sample_step) {
     for (int blk_col = 0; blk_col < start_mvs_cols;
          blk_col += cm->tmvp_sample_step) {
@@ -3815,10 +3809,11 @@ static void fill_id_offset_sample_gap(AV2_COMMON *cm) {
   }
 }
 
-void av2_setup_motion_field(AV2_COMMON *cm) {
+int av2_plan_motion_field(AV2_COMMON *cm, MotionFieldPlan *plan) {
   const OrderHintInfo *const order_hint_info = &cm->seq_params.order_hint_info;
 
-  if (order_hint_info->order_hint_bits_minus_1 < 0) return;
+  plan->count = 0;
+  if (order_hint_info->order_hint_bits_minus_1 < 0) return 0;
 
   TPL_MV_REF *tpl_mvs_base = cm->tpl_mvs;
   const int mvs_rows =
@@ -3904,7 +3899,7 @@ void av2_setup_motion_field(AV2_COMMON *cm) {
     }
   }
 
-  if (stack_count < 2) return;
+  if (stack_count < 2) return 0;
 
   int rf_topo_stack_idx[INTER_REFS_PER_FRAME];
   for (int rf = 0; rf < cm->ref_frames_info.num_total_refs; rf++) {
@@ -3918,7 +3913,7 @@ void av2_setup_motion_field(AV2_COMMON *cm) {
     }
   }
 
-  struct ProcessRefTMVP process_ref[MFMV_STACK_SIZE];
+  struct ProcessRefTMVP *const process_ref = plan->ref;
   int process_count = 0;
   int checked_ref[INTER_REFS_PER_FRAME][2] = { 0 };
 
@@ -4058,15 +4053,34 @@ void av2_setup_motion_field(AV2_COMMON *cm) {
     // Cap the reference frame combination to 1 for reduced_ref_frame_mvs_mode.
     process_count = AVMMIN(1, process_count);
   }
-  for (int pi = 0; pi < process_count; pi++) {
-    motion_field_projection_side(cm, process_ref[pi].start_frame,
-                                 process_ref[pi].target_frame,
-                                 process_ref[pi].side);
-  }
+  plan->count = process_count;
+  return 1;
+}
 
+int av2_motion_field_band_rows(const AV2_COMMON *cm) {
+  return cm->tmvp_proc_size;
+}
+
+void av2_project_motion_field_rows(AV2_COMMON *cm, const MotionFieldPlan *plan,
+                                   int row_start, int row_end) {
+  for (int pi = 0; pi < plan->count; pi++) {
+    motion_field_projection_side(cm, plan->ref[pi].start_frame,
+                                 plan->ref[pi].target_frame, plan->ref[pi].side,
+                                 row_start, row_end);
+  }
+}
+
+void av2_finish_motion_field(AV2_COMMON *cm) {
   if (cm->seq_params.enable_mv_traj) {
     fill_id_offset_sample_gap(cm);
   }
+}
+
+void av2_setup_motion_field(AV2_COMMON *cm) {
+  MotionFieldPlan plan;
+  if (!av2_plan_motion_field(cm, &plan)) return;
+  av2_project_motion_field_rows(cm, &plan, 0, INT_MAX);
+  av2_finish_motion_field(cm);
 }
 
 void av2_setup_ref_frame_sides(AV2_COMMON *cm) {

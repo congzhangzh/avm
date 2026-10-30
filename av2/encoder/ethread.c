@@ -1029,6 +1029,57 @@ static AVM_INLINE int fp_compute_max_mb_rows(
   return max_mb_rows;
 }
 
+typedef struct {
+  AV2_COMMON *cm;
+  const MotionFieldPlan *plan;
+  int band_rows;
+  int num_bands;
+  int num_workers;
+} MotionFieldJob;
+
+// Projects every num_workers-th band of the motion field, starting at the
+// worker's index (data2).
+static int motion_field_worker_hook(void *arg1, void *arg2) {
+  const MotionFieldJob *const job = (const MotionFieldJob *)arg1;
+  for (int band = (int)(intptr_t)arg2; band < job->num_bands;
+       band += job->num_workers) {
+    av2_project_motion_field_rows(job->cm, job->plan, band * job->band_rows,
+                                  (band + 1) * job->band_rows);
+  }
+  return 1;
+}
+
+void av2_setup_motion_field_mt(AV2_COMP *cpi) {
+  AV2_COMMON *const cm = &cpi->common;
+  MultiThreadInfo *const mt_info = &cpi->mt_info;
+  const int num_workers = mt_info->workers ? mt_info->num_workers : 1;
+  MotionFieldPlan plan;
+  if (!av2_plan_motion_field(cm, &plan)) return;
+  const int band_rows = av2_motion_field_band_rows(cm);
+  const int mvs_rows =
+      ROUND_POWER_OF_TWO(cm->mi_params.mi_rows, TMVP_SHIFT_BITS);
+  const int num_bands = (mvs_rows + band_rows - 1) / band_rows;
+  if (num_workers <= 1 || num_bands <= 1 || plan.count == 0) {
+    av2_project_motion_field_rows(cm, &plan, 0, INT_MAX);
+  } else {
+    const int n = AVMMIN(num_workers, num_bands);
+    const MotionFieldJob job = { cm, &plan, band_rows, num_bands, n };
+    const AVxWorkerInterface *const winterface = avm_get_worker_interface();
+    for (int i = n - 1; i >= 0; i--) {
+      AVxWorker *const worker = &mt_info->workers[i];
+      worker->hook = motion_field_worker_hook;
+      worker->data1 = (void *)&job;
+      worker->data2 = (void *)(intptr_t)i;
+      if (i == 0)
+        winterface->execute(worker);
+      else
+        winterface->launch(worker);
+    }
+    for (int i = n - 1; i >= 0; i--) winterface->sync(&mt_info->workers[i]);
+  }
+  av2_finish_motion_field(cm);
+}
+
 void av2_encode_tiles_row_mt(AV2_COMP *cpi) {
   AV2_COMMON *const cm = &cpi->common;
   MultiThreadInfo *const mt_info = &cpi->mt_info;
