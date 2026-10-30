@@ -1306,6 +1306,11 @@ static void set_rt_tool_set(struct av2_extracfg *extra_cfg) {
     extra_cfg->enable_uneven_4way_partitions = 0;
     if (extra_cfg->reduced_tx_type_set == 0) extra_cfg->reduced_tx_type_set = 1;
     extra_cfg->enable_trellis_quant = 0;
+    // MV trajectory tracking makes the TMVP projection several times dearer
+    // (seven reference maps of four kinds per frame): 1440p scrolling text
+    // 25.7 -> 21.6 ms a frame at 4 threads without it, same bits, -0.4 dB at
+    // ~56 dB; desktop and camera content no worse.
+    extra_cfg->enable_mv_traj = 0;
     // Camera-like content: detail concentrates in bands, and each superblock
     // row is a serial chain in the row-MT wavefront, so 64x64 superblocks
     // halve the longest chain (1440p, 4 threads: tile phase 71 -> 59 ms).
