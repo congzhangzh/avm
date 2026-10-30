@@ -1177,6 +1177,9 @@ void av2_set_speed_features_framesize_independent(AV2_COMP *cpi, int speed) {
   init_winner_mode_sf(&sf->winner_mode_sf);
   init_lpf_sf(&sf->lpf_sf);
   init_flexmv_sf(&sf->flexmv_sf);
+  // The realtime features are set only from some speed on: start from none,
+  // so that a lower speed set later does not keep them.
+  memset(&sf->rt_sf, 0, sizeof(sf->rt_sf));
 
   if (oxcf->mode == GOOD) {
     set_good_speed_features_framesize_independent(cpi, sf, speed);
