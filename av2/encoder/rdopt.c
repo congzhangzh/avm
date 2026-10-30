@@ -8414,6 +8414,9 @@ static void tx_search_best_inter_candidates(
     }
     int64_t curr_est_rd = inter_modes_info->est_rd_arr[data_idx];
     if (curr_est_rd * 0.80 > top_est_rd) break;
+    if (cpi->sf.rt_sf.tx_search_top_candidates &&
+        j >= cpi->sf.rt_sf.tx_search_top_candidates)
+      break;
 
     txfm_info->skip_txfm = 0;
     set_ref_ptrs(cm, xd, mbmi->ref_frame[0], mbmi->ref_frame[1]);

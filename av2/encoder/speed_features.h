@@ -1038,6 +1038,10 @@ typedef struct REALTIME_SPEED_FEATURES {
   // full-pel search scores best by the rate/distortion model.
   int nonrd_newmv_ref;
 
+  // With inter_mode_rd_model_estimation, the number of best-modelled
+  // candidates that get the transform search (0: all within 25 % of the best).
+  int tx_search_top_candidates;
+
   // Flag to disable all but DC intra mode for inter frame prediction.
   bool use_only_dc_intra_interframe;
 
