@@ -2124,7 +2124,7 @@ static AVM_INLINE void encode_frame_internal(AV2_COMP *cpi) {
   const DELTAQ_MODE deltaq_mode = oxcf->q_cfg.deltaq_mode;
   int i;
 
-  mi_params->setup_mi(mi_params);
+  av2_setup_mi_mt(cpi);
 
   set_mi_offsets(mi_params, xd, 0, 0, 0, 0);
 

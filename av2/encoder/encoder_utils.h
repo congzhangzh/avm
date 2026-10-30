@@ -111,6 +111,7 @@ static AVM_INLINE void stat_stage_set_mb_mi(CommonModeInfoParams *mi_params,
   set_mb_mi(mi_params, width, height);
 }
 
+// av2_setup_mi_mt() clears the same buffers on the worker threads.
 static AVM_INLINE void enc_setup_mi(CommonModeInfoParams *mi_params) {
   const int mi_grid_size =
       mi_params->mi_stride * calc_mi_size(mi_params->mi_rows);

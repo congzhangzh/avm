@@ -1030,6 +1030,71 @@ static AVM_INLINE int fp_compute_max_mb_rows(
 }
 
 typedef struct {
+  void *ptr;
+  size_t size;
+} ClearRegion;
+
+typedef struct {
+  ClearRegion region[4];
+  int count;
+  int num_workers;
+} ClearJob;
+
+// Zeroes the worker's (data2) share of every region.
+static int clear_worker_hook(void *arg1, void *arg2) {
+  const ClearJob *const job = (const ClearJob *)arg1;
+  const size_t i = (size_t)(intptr_t)arg2;
+  for (int k = 0; k < job->count; k++) {
+    const size_t size = job->region[k].size;
+    const size_t chunk = (size + job->num_workers - 1) / job->num_workers;
+    const size_t start = AVMMIN(size, chunk * i);
+    const size_t end = AVMMIN(size, start + chunk);
+    memset((uint8_t *)job->region[k].ptr + start, 0, end - start);
+  }
+  return 1;
+}
+
+void av2_setup_mi_mt(AV2_COMP *cpi) {
+  CommonModeInfoParams *const mi_params = &cpi->common.mi_params;
+  MultiThreadInfo *const mt_info = &cpi->mt_info;
+  const int num_workers = mt_info->workers ? mt_info->num_workers : 1;
+  if (num_workers <= 1) {
+    mi_params->setup_mi(mi_params);
+    return;
+  }
+  // The same buffers as enc_setup_mi(): the mode info is allocated per 4x4,
+  // ~140 MB at 1440p, and clearing it on one thread took ~4 ms a frame.
+  const int mi_grid_size =
+      mi_params->mi_stride * calc_mi_size(mi_params->mi_rows);
+  const ClearJob job = {
+    { { mi_params->mi_alloc,
+        mi_params->mi_alloc_size * sizeof(*mi_params->mi_alloc) },
+      { mi_params->mi_grid_base,
+        mi_grid_size * sizeof(*mi_params->mi_grid_base) },
+      { mi_params->tx_type_map,
+        mi_grid_size * sizeof(*mi_params->tx_type_map) },
+      { mi_params->cctx_type_map,
+        mi_grid_size * sizeof(*mi_params->cctx_type_map) } },
+    4,
+    num_workers
+  };
+  const AVxWorkerInterface *const winterface = avm_get_worker_interface();
+  for (int i = num_workers - 1; i >= 0; i--) {
+    AVxWorker *const worker = &mt_info->workers[i];
+    worker->hook = clear_worker_hook;
+    worker->data1 = (void *)&job;
+    worker->data2 = (void *)(intptr_t)i;
+    if (i == 0)
+      winterface->execute(worker);
+    else
+      winterface->launch(worker);
+  }
+  for (int i = num_workers - 1; i >= 0; i--)
+    winterface->sync(&mt_info->workers[i]);
+  av2_reset_txk_skip_array_using_mi_params(mi_params);
+}
+
+typedef struct {
   AV2_COMMON *cm;
   const MotionFieldPlan *plan;
   int band_rows;

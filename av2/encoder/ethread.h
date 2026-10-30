@@ -40,6 +40,9 @@ void av2_row_mt_sync_write_dummy(AV2EncRowMultiThreadSync *row_mt_sync, int r,
 void av2_encode_tiles_mt(struct AV2_COMP *cpi);
 void av2_encode_tiles_row_mt(struct AV2_COMP *cpi);
 
+// enc_setup_mi() with its clears spread over the workers.
+void av2_setup_mi_mt(struct AV2_COMP *cpi);
+
 // av2_setup_motion_field() with its projections spread over the workers.
 void av2_setup_motion_field_mt(struct AV2_COMP *cpi);
 
