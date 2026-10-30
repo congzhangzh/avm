@@ -277,24 +277,6 @@ void av2_pick_filter_level(const YV12_BUFFER_CONFIG *sd, AV2_COMP *cpi,
 
   double no_deblocking_cost[MAX_MB_PLANE] = { DBL_MAX, DBL_MAX, DBL_MAX };
 
-  for (int i = 0; i < num_planes; i++) {
-    const int chroma_lambda_mult = i ? CHROMA_LAMBDA_MULT : 1;
-    const int64_t no_deblocking_sse =
-        cm->bru.enabled
-            ? avm_get_sse_plane_available(
-                  cpi->source, &cm->cur_frame->buf, i,
-                  cpi->common.bru.active_mode_map, cpi->common.bru.unit_cols,
-                  cpi->common.bru.unit_cols, cpi->common.bru.unit_rows,
-                  1 << (cm->bru.unit_mi_size_log2 + MI_SIZE_LOG2 -
-                        (i > 0 ? cpi->source->subsampling_x : 0)),
-                  1 << (cm->bru.unit_mi_size_log2 + MI_SIZE_LOG2 -
-                        (i > 0 ? cpi->source->subsampling_y : 0)))
-            : avm_get_sse_plane(cpi->source, &cm->cur_frame->buf, i);
-    no_deblocking_cost[i] = RDCOST_DBL_WITH_NATIVE_BD_DIST(
-        cpi->td.mb.rdmult * chroma_lambda_mult, 0, no_deblocking_sse,
-        cm->seq_params.bit_depth);
-  }
-
   if (method == LPF_PICK_MINIMAL_LPF) {
     lf->apply_deblocking_filter[0] = 0;
     lf->apply_deblocking_filter[1] = 0;
@@ -312,6 +294,25 @@ void av2_pick_filter_level(const YV12_BUFFER_CONFIG *sd, AV2_COMP *cpi,
     lf->delta_side_luma[0] = lf->delta_side_luma[1] = lf->delta_side_u =
         lf->delta_side_v = 0;
   } else {
+    // The cost of no deblocking: only this search compares against it.
+    for (int i = 0; i < num_planes; i++) {
+      const int chroma_lambda_mult = i ? CHROMA_LAMBDA_MULT : 1;
+      const int64_t no_deblocking_sse =
+          cm->bru.enabled
+              ? avm_get_sse_plane_available(
+                    cpi->source, &cm->cur_frame->buf, i,
+                    cpi->common.bru.active_mode_map, cpi->common.bru.unit_cols,
+                    cpi->common.bru.unit_cols, cpi->common.bru.unit_rows,
+                    1 << (cm->bru.unit_mi_size_log2 + MI_SIZE_LOG2 -
+                          (i > 0 ? cpi->source->subsampling_x : 0)),
+                    1 << (cm->bru.unit_mi_size_log2 + MI_SIZE_LOG2 -
+                          (i > 0 ? cpi->source->subsampling_y : 0)))
+              : avm_get_sse_plane(cpi->source, &cm->cur_frame->buf, i);
+      no_deblocking_cost[i] = RDCOST_DBL_WITH_NATIVE_BD_DIST(
+          cpi->td.mb.rdmult * chroma_lambda_mult, 0, no_deblocking_sse,
+          cm->seq_params.bit_depth);
+    }
+
     // To make sure the df filters are run
     lf->apply_deblocking_filter[0] = 1;
     lf->apply_deblocking_filter[1] = 1;
