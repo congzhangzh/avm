@@ -3762,8 +3762,18 @@ void av2_build_inter_predictors(const AV2_COMMON *cm, MACROBLOCKD *xd,
                                 int build_for_decode, int bw, int bh, int mi_x,
                                 int mi_y, uint16_t **mc_buf,
                                 CalcSubpelParamsFunc calc_subpel_params_func) {
-  if (plane == AVM_PLANE_Y)
-    memset(xd->mv_refined, 0, 2 * N_OF_OFFSETS * sizeof(int_mv));
+  if (plane == AVM_PLANE_Y) {
+    // Only the entries this block can reach need to start at zero: the TIP
+    // path indexes them by unit row (TIP_MV_STRIDE units per 8 rows of the
+    // block, plus the four 4x4 sub-blocks a unit may refine), and the regular
+    // optical flow path packs fewer entries than that. Clearing all
+    // 2 * N_OF_OFFSETS entries costs an 8 KB memset per inter prediction.
+    const int unit_rows =
+        AVMMAX(1, (bh + (1 << TMVP_MI_SZ_LOG2) - 1) >> TMVP_MI_SZ_LOG2);
+    const int num_mvs =
+        AVMMIN(2 * N_OF_OFFSETS, 2 * unit_rows * TIP_MV_STRIDE + 8);
+    memset(xd->mv_refined, 0, num_mvs * sizeof(int_mv));
+  }
   // just for debugging purpose
   // Can be removed later on
   if (mi->mode == WARPMV) {
