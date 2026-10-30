@@ -288,6 +288,23 @@ INSTANTIATE_TEST_SUITE_P(
                        ::testing::Values(32, 64)));
 #endif
 
+#if HAVE_NEON
+INSTANTIATE_TEST_SUITE_P(
+    NEON, GDFTest,
+    ::testing::Combine(::testing::Values(&gdf_set_lap_and_cls_unit_c),
+                       ::testing::Values(&gdf_set_lap_and_cls_unit_c),
+                       ::testing::Values(&gdf_inference_unit_c),
+                       ::testing::Values(&gdf_inference_unit_neon),
+                       ::testing::Values(&gdf_compensation_unit_c),
+                       ::testing::Values(&gdf_compensation_unit_c),
+                       ::testing::Values(128, max_test_tile_size),
+                       ::testing::Values(128, max_test_tile_size),
+                       ::testing::Values(8, 10, 12),
+                       ::testing::Range(0, GDF_TRAIN_QP_NUM),
+                       ::testing::Range(0, GDF_TRAIN_REFDST_NUM + 1),
+                       ::testing::Values(32, 64)));
+#endif
+
 #endif
 
 }  // namespace

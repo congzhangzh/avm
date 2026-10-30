@@ -451,6 +451,7 @@ list(
   APPEND
   AVM_AV2_COMMON_INTRIN_NEON
   "${AVM_ROOT}/av2/common/arm/cfl_neon.c"
+  "${AVM_ROOT}/av2/common/arm/gdf_block_neon.c"
   "${AVM_ROOT}/av2/common/arm/convolve_neon.c"
   "${AVM_ROOT}/av2/common/arm/convolve_neon.h"
   "${AVM_ROOT}/av2/common/arm/highbd_convolve_neon.c"
