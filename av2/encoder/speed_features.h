@@ -1033,6 +1033,9 @@ typedef struct REALTIME_SPEED_FEATURES {
   // GLOBALMV from it only: no other reference, compound, intra, palette or
   // intraBC. Mostly static screens make most blocks like that.
   int static_block_zeromv;
+
+  // In inter frames, search only UV_DC_PRED for the chroma of intra blocks.
+  int uv_dc_only_interframe;
 } REALTIME_SPEED_FEATURES;
 
 typedef struct FLEXMV_PRECISION_SPEED_FEATURES {

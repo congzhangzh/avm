@@ -662,6 +662,10 @@ int64_t av2_rd_pick_intra_sbuv_mode(const AV2_COMP *const cpi, MACROBLOCK *x,
       if (dpcm_uv_index > 0 && ((mode != V_PRED && mode != H_PRED))) {
         continue;
       }
+      // Realtime: an intra block in an inter frame gets DC chroma only.
+      if (cpi->sf.rt_sf.uv_dc_only_interframe && !frame_is_intra_only(cm) &&
+          mode != UV_DC_PRED)
+        continue;
       int mode_cost = 0;
       if (xd->lossless[mbmi->segment_id]) {
         int dpcm_uv_cost = x->mode_costs.dpcm_uv_cost[dpcm_uv_index];
