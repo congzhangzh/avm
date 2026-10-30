@@ -4451,7 +4451,11 @@ static int encode_with_recode_loop_and_filter(AV2_COMP *cpi, size_t *size,
     const uint8_t saved_update_map = cm->seg.update_map;
     int best_temporal_update = saved_temporal_update;
 
-    for (int i = 0; i < n_refs; ++i) {
+    // Realtime keeps the primary reference frame it was given: each trial
+    // below packs the whole frame once more, serially.
+    const int search_refs =
+        cpi->sf.rt_sf.skip_primary_ref_frame_search ? 0 : n_refs;
+    for (int i = 0; i < search_refs; ++i) {
       const int temp_map_idx = get_ref_frame_map_idx(cm, i);
       const RefCntBuffer *const temp_ref_buf = cm->ref_frame_map[temp_map_idx];
       assert(temp_ref_buf != NULL);

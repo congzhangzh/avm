@@ -1029,6 +1029,10 @@ typedef struct REALTIME_SPEED_FEATURES {
   // and take the partition variances from the residual it leaves.
   int estimate_motion_for_var_based_partition;
 
+  // Keep the primary reference frame (whose entropy contexts the frame starts
+  // from) instead of packing the frame once per reference to pick one.
+  int skip_primary_ref_frame_search;
+
   // Flag to disable all but DC intra mode for inter frame prediction.
   bool use_only_dc_intra_interframe;
 

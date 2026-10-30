@@ -669,6 +669,7 @@ static void set_rt_speed_features_framesize_independent(
     sf->mv_sf.intrabc_search_level = 1;
     sf->mv_sf.hash_use_crc32c = 1;
     sf->rt_sf.estimate_motion_for_var_based_partition = 1;
+    sf->rt_sf.skip_primary_ref_frame_search = 1;
   }
 }
 
