@@ -1245,6 +1245,58 @@ static double get_modeled_qp_offset(int qp, int level, int bit_depth,
   return q_val * factor / 100;
 }
 
+// The tool set of realtime encoding at the fast speeds: the tools whose
+// search costs the realtime encoder most for the least gain are left out of
+// the sequence (which also makes the stream cheaper to decode). Measured on
+// 720p screen and camera content at a fixed QP, one thread: speed 9 encodes
+// 4-7x faster than speed 9 with every tool, for 2-11 % more bits.
+//   7: the loop-filter searches (CCSO, loop restoration, GDF).
+//   8: also warped and global motion, the MV coding tools, and cost tables
+//      updated once per tile instead of per superblock.
+//   9: also TIP, optical flow and MV refinement, masked / inter-intra /
+//      one-sided compound, the newer intra and transform tools and the
+//      extended partitions.
+static void set_rt_tool_set(struct av2_extracfg *extra_cfg) {
+  const int speed = extra_cfg->cpu_used;
+  if (speed >= 7) {
+    extra_cfg->enable_ccso = 0;
+    extra_cfg->enable_restoration = 0;
+    extra_cfg->enable_gdf = 0;
+  }
+  if (speed >= 8) {
+    extra_cfg->enable_warped_motion = 0;
+    extra_cfg->enable_global_motion = 0;
+    extra_cfg->enable_bawp = 0;
+    extra_cfg->enable_cwp = 0;
+    extra_cfg->enable_adaptive_mvd = 0;
+    extra_cfg->enable_flex_mvres = 0;
+    extra_cfg->enable_joint_mvd = 0;
+    extra_cfg->coeff_cost_upd_freq = COST_UPD_TILE;
+    extra_cfg->mode_cost_upd_freq = COST_UPD_TILE;
+    extra_cfg->mv_cost_upd_freq = COST_UPD_TILE;
+  }
+  if (speed >= 9) {
+    extra_cfg->enable_tip = 0;
+    extra_cfg->enable_opfl_refine = 0;
+    extra_cfg->enable_refinemv = 0;
+    extra_cfg->enable_masked_comp = 0;
+    extra_cfg->enable_interintra_comp = 0;
+    extra_cfg->enable_onesided_comp = 0;
+    extra_cfg->enable_intra_dip = 0;
+    extra_cfg->enable_mrls = 0;
+    extra_cfg->enable_mhccp = 0;
+    extra_cfg->enable_ibp = 0;
+    extra_cfg->enable_fsc = 0;
+    extra_cfg->enable_ist = 0;
+    extra_cfg->enable_inter_ist = 0;
+    extra_cfg->enable_cctx = 0;
+    extra_cfg->enable_tx_partition = 0;
+    extra_cfg->enable_inter_ddt = 0;
+    extra_cfg->enable_ext_partitions = 0;
+    extra_cfg->enable_uneven_4way_partitions = 0;
+  }
+}
+
 // update_config parameter is used to indicate whether extra command line
 // parameters are read. If extra command line parameters are read, then
 // parameters in the configure file will not overwrite the parameters in
@@ -1255,6 +1307,17 @@ static avm_codec_err_t set_encoder_config(AV2EncoderConfig *oxcf,
                                           int update_config) {
   if (cfg->encoder_cfg.init_by_cfg_file && !update_config) {
     update_default_encoder_config(&cfg->encoder_cfg, extra_cfg);
+  }
+
+  // Realtime at speed 7 and up uses its own tool set, applied to a copy so
+  // that the caller's settings stay as they were given; the two fields this
+  // function corrects in extra_cfg are copied back at the end.
+  struct av2_extracfg rt_extra_cfg;
+  struct av2_extracfg *const caller_extra_cfg = extra_cfg;
+  if (cfg->g_usage == AVM_USAGE_REALTIME && extra_cfg->cpu_used >= 7) {
+    rt_extra_cfg = *extra_cfg;
+    set_rt_tool_set(&rt_extra_cfg);
+    extra_cfg = &rt_extra_cfg;
   }
 
   TuneCfg *const tune_cfg = &oxcf->tune_cfg;
@@ -1824,8 +1887,12 @@ static avm_codec_err_t set_encoder_config(AV2EncoderConfig *oxcf,
             "requires good-quality usage.\n");
   }
 
+  if (extra_cfg != caller_extra_cfg) {
+    caller_extra_cfg->lossless = extra_cfg->lossless;
+    caller_extra_cfg->max_reference_frames = extra_cfg->max_reference_frames;
+  }
   if (update_config) {
-    update_encoder_config(&cfg->encoder_cfg, extra_cfg);
+    update_encoder_config(&cfg->encoder_cfg, caller_extra_cfg);
   }
   return AVM_CODEC_OK;
 }
