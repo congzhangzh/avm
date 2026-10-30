@@ -2872,6 +2872,27 @@ typedef struct AV2_COMP {
    */
   int is_screen_content_type;
 
+  /*!
+   * Realtime, speed >= 7: the screen content detector runs on intra frames
+   * only; inter frames reuse its last answer, kept here.
+   */
+  int rt_sc_detect_valid;
+  /*!
+   * Detector answer: allow_screen_content_tools, allow_intrabc and
+   * is_scc_content_by_detector.
+   */
+  int rt_sc_detect[3];
+  /*!
+   * Realtime, speed >= 7: av2_is_integer_mv() runs on every 8th inter frame;
+   * the frames in between keep rt_integer_mv. rt_integer_mv_age counts the
+   * inter frames since it last ran (0: never).
+   */
+  int rt_integer_mv_age;
+  /*!
+   * The last answer of av2_is_integer_mv().
+   */
+  int rt_integer_mv;
+
 #if CONFIG_COLLECT_PARTITION_STATS == 2
   /*!
    * Accumulates the partition timing stat over the whole frame.

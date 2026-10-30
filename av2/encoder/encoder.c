@@ -2372,6 +2372,21 @@ void av2_set_screen_content_options(AV2_COMP *cpi, FeatureFlags *features) {
   const int bd = cm->seq_params.bit_depth;
   const int blk_w = 16;
   const int blk_h = 16;
+  if (cpi->oxcf.tune_cfg.content == AVM_CONTENT_SCREEN) {
+    // The detector's answer would be overridden below; skip the scan.
+    features->allow_screen_content_tools = features->allow_intrabc =
+        features->is_scc_content_by_detector = 1;
+    return;
+  }
+  // Realtime: scan intra frames only, as libaom does; inter frames keep the
+  // last answer.
+  const int rt_reuse = cpi->oxcf.mode == REALTIME && cpi->oxcf.speed >= 7 &&
+                       !frame_is_intra_only(cm) && cpi->rt_sc_detect_valid;
+  if (rt_reuse) {
+    features->allow_screen_content_tools = cpi->rt_sc_detect[0];
+    features->allow_intrabc = cpi->rt_sc_detect[1];
+    features->is_scc_content_by_detector = cpi->rt_sc_detect[2];
+  }
   // These threshold values are selected experimentally.
   const int color_thresh = 4;
   const unsigned int var_thresh = 0;
@@ -2381,7 +2396,7 @@ void av2_set_screen_content_options(AV2_COMP *cpi, FeatureFlags *features) {
   // than var_thresh.
   int counts_2 = 0;
 
-  for (int r = 0; r + blk_h <= height; r += blk_h) {
+  for (int r = 0; !rt_reuse && r + blk_h <= height; r += blk_h) {
     for (int c = 0; c + blk_w <= width; c += blk_w) {
       int count_buf[1 << 8];  // Maximum (1 << 8) bins for hbd path.
       const uint16_t *const this_src = src + r * stride + c;
@@ -2403,23 +2418,24 @@ void av2_set_screen_content_options(AV2_COMP *cpi, FeatureFlags *features) {
   const int col_factor = 11;
   const int var_factor = 12;
 
-  // The threshold values are selected experimentally.
-  features->allow_screen_content_tools =
-      counts_1 * blk_h * blk_w * col_factor > width * height;
-  // IntraBC would force loop filters off, so we use more strict rules that also
-  // requires that the block has high variance.
-  features->allow_intrabc =
-      features->allow_screen_content_tools &&
-      counts_2 * blk_h * blk_w * var_factor > width * height;
+  if (!rt_reuse) {
+    // The threshold values are selected experimentally.
+    features->allow_screen_content_tools =
+        counts_1 * blk_h * blk_w * col_factor > width * height;
+    // IntraBC would force loop filters off, so we use more strict rules that
+    // also requires that the block has high variance.
+    features->allow_intrabc =
+        features->allow_screen_content_tools &&
+        counts_2 * blk_h * blk_w * var_factor > width * height;
 
-  features->is_scc_content_by_detector =
-      features->allow_screen_content_tools &&
-      counts_2 * blk_h * blk_w * var_factor > width * height;
+    features->is_scc_content_by_detector =
+        features->allow_screen_content_tools &&
+        counts_2 * blk_h * blk_w * var_factor > width * height;
 
-  if (cpi->oxcf.tune_cfg.content == AVM_CONTENT_SCREEN) {
-    features->allow_screen_content_tools = features->allow_intrabc =
-        features->is_scc_content_by_detector = 1;
-    return;
+    cpi->rt_sc_detect[0] = features->allow_screen_content_tools;
+    cpi->rt_sc_detect[1] = features->allow_intrabc;
+    cpi->rt_sc_detect[2] = features->is_scc_content_by_detector;
+    cpi->rt_sc_detect_valid = 1;
   }
 
   if (cm->seq_params.force_screen_content_tools > 0) {
@@ -4939,8 +4955,20 @@ static int encode_frame_to_data_rate(AV2_COMP *cpi, size_t *size, uint8_t *dest,
     if (cpi->common.seq_params.force_integer_mv == 2) {
       // Adaptive mode: see what previous frame encoded did
       if (cpi->unscaled_last_source != NULL) {
-        features->cur_frame_force_integer_mv = av2_is_integer_mv(
-            cpi->source, cpi->unscaled_last_source, &cpi->force_intpel_info);
+        // Realtime: decide on every 8th inter frame, keep it in between.
+        const int rt_keep = cpi->oxcf.mode == REALTIME &&
+                            cpi->oxcf.speed >= 7 &&
+                            cpi->rt_integer_mv_age > 0 &&
+                            cpi->rt_integer_mv_age < 8;
+        if (rt_keep) {
+          features->cur_frame_force_integer_mv = cpi->rt_integer_mv;
+          ++cpi->rt_integer_mv_age;
+        } else {
+          features->cur_frame_force_integer_mv = av2_is_integer_mv(
+              cpi->source, cpi->unscaled_last_source, &cpi->force_intpel_info);
+          cpi->rt_integer_mv = features->cur_frame_force_integer_mv;
+          cpi->rt_integer_mv_age = 1;
+        }
       } else {
         cpi->common.features.cur_frame_force_integer_mv = 0;
       }
