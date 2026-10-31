@@ -4285,10 +4285,10 @@ static int skip_repeated_newmv(
       i = av2_ref_mv_idx_type(mbmi, temp_mv_idx);
 
       // Check if the motion search result same as previous results
-      if (cur_mv[0].as_int ==
+      if (args->single_newmv_valid[pb_mv_precision][temp_mv_idx[0]][refs[0]] &&
+          cur_mv[0].as_int ==
               args->single_newmv[pb_mv_precision][temp_mv_idx[0]][refs[0]]
-                  .as_int &&
-          args->single_newmv_valid[pb_mv_precision][temp_mv_idx[0]][refs[0]]) {
+                  .as_int) {
         // If the compared mode has no valid rd, it is unlikely this
         // mode will be the best mode
         if (mode_info[i].rd == INT64_MAX) {
@@ -7494,11 +7494,13 @@ static AVM_INLINE void init_inter_mode_search_state(
 
   search_state->best_intra_rd = INT64_MAX;
 
-  av2_zero(search_state->single_newmv);
-  av2_zero(search_state->single_newmv_rate);
+  // single_newmv and single_newmv_rate are read only where
+  // single_newmv_valid is set.
   av2_zero(search_state->single_newmv_valid);
 
-  for (int i = 0; i < MB_MODE_COUNT; ++i) {
+  // Only inter modes index modelled_rd and simple_rd: the intra rows are
+  // never read.
+  for (int i = SINGLE_INTER_MODE_START; i < MB_MODE_COUNT; ++i) {
     for (int j = 0; j < MAX_REF_MV_SEARCH; ++j) {
       for (int ref_frame = 0; ref_frame < SINGLE_REF_FRAMES; ++ref_frame) {
         search_state->modelled_rd[i][j][ref_frame] = INT64_MAX;
