@@ -1175,12 +1175,16 @@ void av2_setup_motion_field_mt(AV2_COMP *cpi) {
   const int mvs_rows =
       ROUND_POWER_OF_TWO(cm->mi_params.mi_rows, TMVP_SHIFT_BITS);
   const int num_bands = (mvs_rows + band_rows - 1) / band_rows;
-  if (num_workers <= 1 || num_bands <= 1 || plan.count == 0) {
+  // With motion vector trajectories a projection also writes the trajectory
+  // map at rows of other bands, and reads it there: one thread then.
+  if (num_workers <= 1 || num_bands <= 1 || plan.count == 0 ||
+      cm->seq_params.enable_mv_traj) {
     av2_init_motion_field_rows(cm, 0, INT_MAX);
     av2_project_motion_field_rows(cm, &plan, 0, INT_MAX);
   } else {
     // Each band's rows are initialised by the worker that projects into
-    // them, just before it does: projections never leave their band.
+    // them, just before it does: without trajectories, projections never
+    // leave their band.
     const int n = AVMMIN(num_workers, num_bands);
     const MotionFieldJob job = { cm, &plan, band_rows, num_bands, n };
     const AVxWorkerInterface *const winterface = avm_get_worker_interface();
