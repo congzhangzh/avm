@@ -214,25 +214,22 @@ static INLINE int get_num_pix_bsize_base(
   return block_size_wide[bsize_base] * block_size_high[bsize_base];
 }
 
+// The context and all its per-4x4 arrays live in one 32-byte aligned
+// allocation (one malloc/free a block instead of up to 17).
+#define PMC_ALIGN(n) (((n) + 31) & ~(size_t)31)
+
 PICK_MODE_CONTEXT *av2_alloc_pmc(const AV2_COMMON *cm, TREE_TYPE tree_type,
                                  int mi_row, int mi_col, BLOCK_SIZE bsize,
                                  PC_TREE *parent,
                                  PARTITION_TYPE parent_partition, int index,
                                  int subsampling_x, int subsampling_y,
                                  PC_TREE_SHARED_BUFFERS *shared_bufs) {
-  PICK_MODE_CONTEXT *ctx = NULL;
-  struct avm_internal_error_info error;
-
-  AVM_CHECK_MEM_ERROR(&error, ctx, avm_calloc(1, sizeof(*ctx)));
-  ctx->rd_mode_is_ready = 0;
-  ctx->parent = parent;
-  ctx->index = index;
+  CHROMA_REF_INFO chroma_ref_info;
   set_chroma_ref_info(tree_type, mi_row, mi_col, index, bsize,
-                      &ctx->chroma_ref_info,
+                      &chroma_ref_info,
                       parent ? &parent->chroma_ref_info : NULL,
                       parent ? parent->block_size : BLOCK_INVALID,
                       parent_partition, subsampling_x, subsampling_y);
-  ctx->mic.chroma_ref_info = ctx->chroma_ref_info;
 
   const int num_planes = av2_num_planes(cm);
   const int num_pix = block_size_wide[bsize] * block_size_high[bsize];
@@ -240,76 +237,75 @@ PICK_MODE_CONTEXT *av2_alloc_pmc(const AV2_COMMON *cm, TREE_TYPE tree_type,
 
   // We need to get actual chroma block size due to possible sub-8x8 luma block
   // sizes.
-  const int num_pix_bize_base = get_num_pix_bsize_base(
-      bsize, tree_type, &ctx->chroma_ref_info, num_planes);
+  const int num_pix_bize_base =
+      get_num_pix_bsize_base(bsize, tree_type, &chroma_ref_info, num_planes);
+  const int num_blk_chroma = num_pix_bize_base / 16;
+  const int has_palette = num_pix <= MAX_PALETTE_SQUARE;
+
+  // Zeroed part (calloc'd before): tx_type_map, cctx_type_map, blk_skip.
+  size_t size = PMC_ALIGN(sizeof(PICK_MODE_CONTEXT));
+  const size_t tx_type_off = size;
+  size += PMC_ALIGN(num_blk * sizeof(TX_TYPE));
+  const size_t cctx_off = size;
+  size += PMC_ALIGN(num_blk_chroma * sizeof(CctxType));
+  size_t blk_skip_off[MAX_MB_PLANE];
+  for (int i = 0; i < num_planes; ++i) {
+    blk_skip_off[i] = size;
+    size += PMC_ALIGN((i == 0 ? num_blk : num_blk_chroma) * sizeof(uint8_t));
+  }
+  const size_t zeroed = size;
+  size_t eobs_off[MAX_MB_PLANE], bobs_off[MAX_MB_PLANE],
+      txb_ctx_off[MAX_MB_PLANE];
+  for (int i = 0; i < num_planes; ++i) {
+    const int n = i == 0 ? num_blk : num_blk_chroma;
+    eobs_off[i] = size;
+    size += PMC_ALIGN(n * sizeof(uint16_t));
+    bobs_off[i] = size;
+    size += PMC_ALIGN(n * sizeof(uint16_t));
+    txb_ctx_off[i] = size;
+    size += PMC_ALIGN(n * sizeof(uint8_t));
+  }
+  size_t color_off[2] = { 0, 0 };
+  if (has_palette) {
+    for (int i = 0; i < 2; ++i) {
+      color_off[i] = size;
+      size += PMC_ALIGN((i == 0 ? num_pix : num_pix_bize_base) *
+                        sizeof(uint8_t));
+    }
+  }
+
+  uint8_t *mem = NULL;
+  struct avm_internal_error_info error;
+  AVM_CHECK_MEM_ERROR(&error, mem, avm_memalign(32, size));
+  memset(mem, 0, zeroed);
+  PICK_MODE_CONTEXT *ctx = (PICK_MODE_CONTEXT *)mem;
+  ctx->rd_mode_is_ready = 0;
+  ctx->parent = parent;
+  ctx->index = index;
+  ctx->chroma_ref_info = chroma_ref_info;
+  ctx->mic.chroma_ref_info = ctx->chroma_ref_info;
   ctx->num_4x4_blk = num_blk;
-  ctx->num_4x4_blk_chroma = num_pix_bize_base / 16;
-
-  AVM_CHECK_MEM_ERROR(&error, ctx->tx_type_map,
-                      avm_calloc(num_blk, sizeof(*ctx->tx_type_map)));
-  AVM_CHECK_MEM_ERROR(
-      &error, ctx->cctx_type_map,
-      avm_calloc(ctx->num_4x4_blk_chroma, sizeof(*ctx->cctx_type_map)));
-
+  ctx->num_4x4_blk_chroma = num_blk_chroma;
+  ctx->tx_type_map = (TX_TYPE *)(mem + tx_type_off);
+  ctx->cctx_type_map = (CctxType *)(mem + cctx_off);
   for (int i = 0; i < num_planes; ++i) {
     ctx->coeff[i] = shared_bufs->coeff_buf[i];
     ctx->qcoeff[i] = shared_bufs->qcoeff_buf[i];
     ctx->dqcoeff[i] = shared_bufs->dqcoeff_buf[i];
-    const int num_blk_plane =
-        (i == 0) ? ctx->num_4x4_blk : ctx->num_4x4_blk_chroma;
-    AVM_CHECK_MEM_ERROR(&error, ctx->blk_skip[i],
-                        avm_calloc(num_blk_plane, sizeof(*ctx->blk_skip[i])));
-    AVM_CHECK_MEM_ERROR(
-        &error, ctx->eobs[i],
-        avm_memalign(32, num_blk_plane * sizeof(*ctx->eobs[i])));
-    AVM_CHECK_MEM_ERROR(
-        &error, ctx->bobs[i],
-        avm_memalign(32, num_blk_plane * sizeof(*ctx->bobs[i])));
-    AVM_CHECK_MEM_ERROR(
-        &error, ctx->txb_entropy_ctx[i],
-        avm_memalign(32, num_blk_plane * sizeof(*ctx->txb_entropy_ctx[i])));
+    ctx->blk_skip[i] = mem + blk_skip_off[i];
+    ctx->eobs[i] = (uint16_t *)(mem + eobs_off[i]);
+    ctx->bobs[i] = (uint16_t *)(mem + bobs_off[i]);
+    ctx->txb_entropy_ctx[i] = mem + txb_ctx_off[i];
   }
-
-  if (num_pix <= MAX_PALETTE_SQUARE) {
-    for (int i = 0; i < 2; ++i) {
-      const int color_map_size = (i == 0) ? num_pix : num_pix_bize_base;
-      AVM_CHECK_MEM_ERROR(
-          &error, ctx->color_index_map[i],
-          avm_memalign(32, color_map_size * sizeof(*ctx->color_index_map[i])));
-    }
+  if (has_palette) {
+    for (int i = 0; i < 2; ++i) ctx->color_index_map[i] = mem + color_off[i];
   }
   av2_invalid_rd_stats(&ctx->rd_stats);
   return ctx;
 }
 
 void av2_free_pmc(PICK_MODE_CONTEXT *ctx, int num_planes) {
-  if (ctx == NULL) return;
-
-  for (int i = 0; i < MAX_MB_PLANE; ++i) {
-    avm_free(ctx->blk_skip[i]);
-    ctx->blk_skip[i] = NULL;
-  }
-  avm_free(ctx->tx_type_map);
-  ctx->tx_type_map = NULL;
-  avm_free(ctx->cctx_type_map);
-  ctx->cctx_type_map = NULL;
-  for (int i = 0; i < num_planes; ++i) {
-    ctx->coeff[i] = NULL;
-    ctx->qcoeff[i] = NULL;
-    ctx->dqcoeff[i] = NULL;
-    avm_free(ctx->eobs[i]);
-    ctx->eobs[i] = NULL;
-    avm_free(ctx->bobs[i]);
-    ctx->bobs[i] = NULL;
-    avm_free(ctx->txb_entropy_ctx[i]);
-    ctx->txb_entropy_ctx[i] = NULL;
-  }
-
-  for (int i = 0; i < 2; ++i) {
-    avm_free(ctx->color_index_map[i]);
-    ctx->color_index_map[i] = NULL;
-  }
-
+  (void)num_planes;
   avm_free(ctx);
 }
 
