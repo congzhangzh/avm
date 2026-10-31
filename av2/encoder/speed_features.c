@@ -680,9 +680,11 @@ static void set_rt_speed_features_framesize_independent(
     // content 13 % less time, 1.9 % fewer bits, -0.09 dB.
     sf->inter_sf.inter_mode_rd_model_estimation = 2;
     sf->rt_sf.tx_search_top_candidates = 1;
-    sf->rt_sf.nonrd_inter_cands = 1;
+    // Two candidates, NEWMV scored on every reference: 1440p camera
+    // content BD-rate +4.8 % against the RD search (one candidate with
+    // NEWMV on the best reference only: +11.6 %, 10 % less time).
+    sf->rt_sf.nonrd_inter_cands = 2;
     sf->rt_sf.nonrd_inter_gap = 20;
-    sf->rt_sf.nonrd_newmv_best_ref = 1;
   }
 }
 
