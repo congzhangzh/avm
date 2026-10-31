@@ -42,3 +42,15 @@ int avm_satd_sse2(const tran_low_t *coeff, int length) {
 
   return _mm_cvtsi128_si32(accum);
 }
+
+// Pixels are at most 12 bits, so the eight rows of a column add up to at most
+// 8 * 4095 in a 16-bit lane; the lanes are then widened and added.
+unsigned int avm_highbd_avg_8x8_sse2(const uint16_t *s, int p) {
+  __m128i sum = _mm_loadu_si128((const __m128i *)s);
+  for (int i = 1; i < 8; ++i)
+    sum = _mm_add_epi16(sum, _mm_loadu_si128((const __m128i *)(s + i * p)));
+  __m128i sum32 = _mm_madd_epi16(sum, _mm_set1_epi16(1));
+  sum32 = _mm_add_epi32(sum32, _mm_srli_si128(sum32, 8));
+  sum32 = _mm_add_epi32(sum32, _mm_srli_si128(sum32, 4));
+  return (unsigned int)(_mm_cvtsi128_si32(sum32) + 32) >> 6;
+}
