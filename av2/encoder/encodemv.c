@@ -91,7 +91,7 @@ static void write_tu_quasi_uniform(avm_writer *w, nmv_context *mvctx,
   }
 }
 
-static void av2_encode_vq_amvd(AV2_COMP *cpi, MV mv, avm_writer *w,
+static void av2_encode_vq_amvd(int *max_mv_magnitude, MV mv, avm_writer *w,
                                nmv_context *mvctx, const MV mv_diff) {
   const MV_JOINT_TYPE j = av2_get_mv_joint(&mv_diff);
   assert(j < MV_JOINTS - 1);
@@ -123,12 +123,10 @@ static void av2_encode_vq_amvd(AV2_COMP *cpi, MV mv, avm_writer *w,
                      MAX_AMVD_INDEX);
   }
 
-  // If auto_mv_step_size is enabled then keep track of the largest
-  // motion vector component used.
-  if (cpi && cpi->sf.mv_sf.auto_mv_step_size) {
+  // Keep track of the largest motion vector component used (auto_mv_step_size).
+  if (max_mv_magnitude) {
     int maxv = AVMMAX(abs(mv.row), abs(mv.col)) >> 3;
-    cpi->mv_search_params.max_mv_magnitude =
-        AVMMAX(maxv, cpi->mv_search_params.max_mv_magnitude);
+    *max_mv_magnitude = AVMMAX(maxv, *max_mv_magnitude);
   }
 }
 static void av2_update_vq_amvd(nmv_context *mvctx, const MV mv_diff) {
@@ -161,11 +159,11 @@ static void av2_update_vq_amvd(nmv_context *mvctx, const MV mv_diff) {
   }
 }
 
-void av2_encode_mv(AV2_COMP *cpi, MV mv, avm_writer *w, nmv_context *mvctx,
-                   const MV mv_diff, MvSubpelPrecision pb_mv_precision,
-                   int is_adaptive_mvd) {
+void av2_encode_mv(int *max_mv_magnitude, MV mv, avm_writer *w,
+                   nmv_context *mvctx, const MV mv_diff,
+                   MvSubpelPrecision pb_mv_precision, int is_adaptive_mvd) {
   if (is_adaptive_mvd) {
-    av2_encode_vq_amvd(cpi, mv, w, mvctx, mv_diff);
+    av2_encode_vq_amvd(max_mv_magnitude, mv, w, mvctx, mv_diff);
     return;
   }
 
@@ -254,12 +252,10 @@ void av2_encode_mv(AV2_COMP *cpi, MV mv, avm_writer *w, nmv_context *mvctx,
     }
   }
 
-  // If auto_mv_step_size is enabled then keep track of the largest
-  // motion vector component used.
-  if (cpi && cpi->sf.mv_sf.auto_mv_step_size) {
+  // Keep track of the largest motion vector component used (auto_mv_step_size).
+  if (max_mv_magnitude) {
     int maxv = AVMMAX(abs(mv.row), abs(mv.col)) >> 3;
-    cpi->mv_search_params.max_mv_magnitude =
-        AVMMAX(maxv, cpi->mv_search_params.max_mv_magnitude);
+    *max_mv_magnitude = AVMMAX(maxv, *max_mv_magnitude);
   }
 }
 void av2_update_mv_stats(nmv_context *mvctx, const MV mv_diff,

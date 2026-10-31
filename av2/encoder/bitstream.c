@@ -920,6 +920,7 @@ static AVM_INLINE void write_intra_dip_mode_info(const AV2_COMMON *cm,
 
 static AVM_INLINE void write_mb_interp_filter(AV2_COMMON *const cm,
                                               const MACROBLOCKD *xd,
+                                              int *interp_filter_selected,
                                               avm_writer *w) {
   const MB_MODE_INFO *const mbmi = xd->mi[0];
   FRAME_CONTEXT *ec_ctx = xd->tile_ctx;
@@ -948,7 +949,7 @@ static AVM_INLINE void write_mb_interp_filter(AV2_COMMON *const cm,
     const InterpFilter filter = mbmi->interp_fltr;
     avm_write_symbol(w, filter, ec_ctx->switchable_interp_cdf[ctx],
                      SWITCHABLE_FILTERS);
-    ++cm->cur_frame->interp_filter_selected[filter];
+    ++interp_filter_selected[filter];
   }
 }
 
@@ -1747,6 +1748,8 @@ static AVM_INLINE void pack_inter_mode_mvs(AV2_COMP *cpi, ThreadData *td, avm_wr
   AV2_COMMON *const cm = &cpi->common;
   MACROBLOCK *const x = &td->mb;
   MACROBLOCKD *const xd = &x->e_mbd;
+  int *const max_mv =
+      cpi->sf.mv_sf.auto_mv_step_size ? &td->max_mv_magnitude : NULL;
   FRAME_CONTEXT *ec_ctx = xd->tile_ctx;
   const struct segmentation *const seg = &cm->seg;
   struct segmentation_probs *const segp = &ec_ctx->seg;
@@ -1999,7 +2002,7 @@ static AVM_INLINE void pack_inter_mode_mvs(AV2_COMP *cpi, ThreadData *td, avm_wr
 
       get_mvd_from_ref_mv(mbmi->mv[0].as_mv, ref_mv.as_mv, is_adaptive_mvd,
                           pb_mv_precision, &mv_diff[0]);
-      av2_encode_mv(cpi, mbmi->mv[0].as_mv, w, nmvc, mv_diff[0],
+      av2_encode_mv(max_mv, mbmi->mv[0].as_mv, w, nmvc, mv_diff[0],
                     pb_mv_precision, is_adaptive_mvd);
 
     } else {
@@ -2012,7 +2015,7 @@ static AVM_INLINE void pack_inter_mode_mvs(AV2_COMP *cpi, ThreadData *td, avm_wr
 
           get_mvd_from_ref_mv(mbmi->mv[ref].as_mv, ref_mv.as_mv,
                               is_adaptive_mvd, pb_mv_precision, &mv_diff[ref]);
-          av2_encode_mv(cpi, mbmi->mv[ref].as_mv, w, nmvc, mv_diff[ref],
+          av2_encode_mv(max_mv, mbmi->mv[ref].as_mv, w, nmvc, mv_diff[ref],
                         pb_mv_precision, is_adaptive_mvd);
         }
       } else if (mode == NEAR_NEWMV || mode == NEAR_NEWMV_OPTFLOW ||
@@ -2024,7 +2027,7 @@ static AVM_INLINE void pack_inter_mode_mvs(AV2_COMP *cpi, ThreadData *td, avm_wr
         start_signaled_mvd_idx = 1;
         get_mvd_from_ref_mv(mbmi->mv[1].as_mv, ref_mv.as_mv, is_adaptive_mvd,
                             pb_mv_precision, &mv_diff[1]);
-        av2_encode_mv(cpi, mbmi->mv[1].as_mv, w, nmvc, mv_diff[1],
+        av2_encode_mv(max_mv, mbmi->mv[1].as_mv, w, nmvc, mv_diff[1],
                       pb_mv_precision, is_adaptive_mvd);
 
       } else if (mode == NEW_NEARMV || mode == NEW_NEARMV_OPTFLOW ||
@@ -2035,7 +2038,7 @@ static AVM_INLINE void pack_inter_mode_mvs(AV2_COMP *cpi, ThreadData *td, avm_wr
         start_signaled_mvd_idx = 0;
         get_mvd_from_ref_mv(mbmi->mv[0].as_mv, ref_mv.as_mv, is_adaptive_mvd,
                             pb_mv_precision, &mv_diff[0]);
-        av2_encode_mv(cpi, mbmi->mv[0].as_mv, w, nmvc, mv_diff[0],
+        av2_encode_mv(max_mv, mbmi->mv[0].as_mv, w, nmvc, mv_diff[0],
                       pb_mv_precision, is_adaptive_mvd);
       }
     }
@@ -2158,7 +2161,7 @@ static AVM_INLINE void pack_inter_mode_mvs(AV2_COMP *cpi, ThreadData *td, avm_wr
     }
     if (cm->features.enable_cwp && is_cwp_allowed(mbmi) && !mbmi->skip_mode)
       write_cwp_idx(xd, w, cm, mbmi);
-    write_mb_interp_filter(cm, xd, w);
+    write_mb_interp_filter(cm, xd, td->interp_filter_selected, w);
   }
 }
 
@@ -6107,6 +6110,9 @@ typedef struct {
   int start_tile_idx;
   int end_tile_idx;
   int num_workers;
+  // The main thread's MACROBLOCKD before packing; the main thread packs too,
+  // so the workers copy this, not its live one.
+  const MACROBLOCKD *xd;
 } PackTilesJob;
 
 // Packs every num_workers-th tile of the range, from the worker's index.
@@ -6124,7 +6130,7 @@ static int pack_tiles_worker_hook(void *arg1, void *arg2) {
     const int tile_col = t % cm->tiles.cols;
     // The writer reads the frame's mode info through its own MACROBLOCKD,
     // set up as the main thread's.
-    if (td != &cpi->td) td->mb.e_mbd = cpi->td.mb.e_mbd;
+    if (td != &cpi->td) td->mb.e_mbd = *job->xd;
     TileInfo tile_info;
     av2_tile_set_row(&tile_info, cm, tile_row);
     av2_tile_set_col(&tile_info, cm, tile_col);
@@ -6170,8 +6176,9 @@ static PackedTile *pack_tiles_mt(AV2_COMP *const cpi, int start_tile_idx,
   }
   for (int t = start_tile_idx; t <= end_tile_idx; ++t)
     tiles[t].data = cpi->tile_pack_buf + offsets[t];
-  const PackTilesJob job = { cpi, tiles, start_tile_idx, end_tile_idx,
-                             num_workers };
+  const MACROBLOCKD xd = cpi->td.mb.e_mbd;
+  const PackTilesJob job = { cpi,          tiles,       start_tile_idx,
+                             end_tile_idx, num_workers, &xd };
   const AVxWorkerInterface *const winterface = avm_get_worker_interface();
   for (int i = num_workers - 1; i >= 0; i--) {
     AVxWorker *const worker = &mt_info->workers[i];
@@ -7536,6 +7543,43 @@ static int av2_pack_bitstream_internal(AV2_COMP *const cpi, uint8_t *dst,
 // flag to 0. We need to undo that before returning, otherwise subsequently the
 // encoder would be mistaken and not evaluate whether the frame-level flags
 // should be set to 1.
+// The threads that pack tiles: the main thread and the tile workers.
+static int get_pack_threads(AV2_COMP *const cpi, ThreadData **td) {
+  MultiThreadInfo *const mt_info = &cpi->mt_info;
+  int n = 0;
+  td[n++] = &cpi->td;
+  for (int i = 1; mt_info->tile_thr_data && i < mt_info->num_workers; i++) {
+    ThreadData *const t = mt_info->tile_thr_data[i].td;
+    if (t && t != &cpi->td) td[n++] = t;
+  }
+  return n;
+}
+
+static void reset_pack_counts(AV2_COMP *const cpi) {
+  ThreadData *td[MAX_NUM_THREADS + 1];
+  const int n = get_pack_threads(cpi, td);
+  for (int i = 0; i < n; i++) {
+    av2_zero(td[i]->interp_filter_selected);
+    td[i]->max_mv_magnitude = -1;
+  }
+}
+
+// Adds what each thread counted while packing into the frame: sums and a
+// maximum, so the result does not depend on which thread packed which tile.
+static void merge_pack_counts(AV2_COMP *const cpi) {
+  AV2_COMMON *const cm = &cpi->common;
+  ThreadData *td[MAX_NUM_THREADS + 1];
+  const int n = get_pack_threads(cpi, td);
+  for (int i = 0; i < n; i++) {
+    for (int f = 0; f < SWITCHABLE && cm->cur_frame; f++)
+      cm->cur_frame->interp_filter_selected[f] +=
+          td[i]->interp_filter_selected[f];
+    if (cpi->sf.mv_sf.auto_mv_step_size)
+      cpi->mv_search_params.max_mv_magnitude = AVMMAX(
+          cpi->mv_search_params.max_mv_magnitude, td[i]->max_mv_magnitude);
+  }
+}
+
 int av2_pack_bitstream(AV2_COMP *const cpi, uint8_t *dst, size_t *size,
                        int *const largest_tile_id) {
   AV2_COMMON *const cm = &cpi->common;
@@ -7566,7 +7610,9 @@ int av2_pack_bitstream(AV2_COMP *const cpi, uint8_t *dst, size_t *size,
     }
   }
 
+  reset_pack_counts(cpi);
   const int res = av2_pack_bitstream_internal(cpi, dst, size, largest_tile_id);
+  merge_pack_counts(cpi);
 
   // Restore the sequence-level flags.
   cm->seq_params.enable_gdf = enable_gdf_save;

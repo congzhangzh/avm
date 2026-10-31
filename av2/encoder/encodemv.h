@@ -19,9 +19,11 @@
 extern "C" {
 #endif
 
-void av2_encode_mv(AV2_COMP *cpi, MV mv, avm_writer *w, nmv_context *mvctx,
-                   const MV mv_diff, MvSubpelPrecision pb_mv_precision,
-                   int is_adaptive_mvd);
+// max_mv_magnitude, when not NULL, keeps the largest motion vector component
+// written (for auto_mv_step_size).
+void av2_encode_mv(int *max_mv_magnitude, MV mv, avm_writer *w,
+                   nmv_context *mvctx, const MV mv_diff,
+                   MvSubpelPrecision pb_mv_precision, int is_adaptive_mvd);
 void av2_update_mv_stats(nmv_context *mvctx, const MV mv_diff,
                          MvSubpelPrecision pb_mv_precision,
                          int is_adaptive_mvd);

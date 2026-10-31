@@ -1757,6 +1757,15 @@ typedef struct ThreadData {
   // Whether mb holds a copy of the main thread's MV/DV cost tables, made at
   // mb.mv_tables_gen.
   int mv_tables_copied;
+  /*!
+   * What packing this thread's tiles counted. Several threads pack tiles at
+   * once, so av2_pack_bitstream() adds these into the frame afterwards.
+   */
+  int interp_filter_selected[SWITCHABLE];
+  /*!
+   * Largest motion vector component this thread's tiles wrote, -1 for none.
+   */
+  int max_mv_magnitude;
 } ThreadData;
 
 struct EncWorkerData;
