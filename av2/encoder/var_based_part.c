@@ -155,7 +155,7 @@ static inline void set_block_size(AV2_COMP *const cpi, int mi_row, int mi_col,
     const int mi_grid_idx = get_mi_grid_idx(mi_params, mi_row, mi_col);
     const int mi_alloc_idx = get_alloc_mi_idx(mi_params, mi_row, mi_col);
     MB_MODE_INFO *mi = mi_params->mi_grid_base[mi_grid_idx] =
-        &mi_params->mi_alloc[mi_alloc_idx];
+        get_alloc_mi(mi_params, mi_alloc_idx);
     mi->sb_type[PLANE_TYPE_Y] = bsize;
     mi->sb_type[PLANE_TYPE_UV] = bsize;
   }

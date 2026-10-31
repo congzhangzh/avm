@@ -335,9 +335,15 @@ void av2_update_state(const AV2_COMP *const cpi, ThreadData *td,
     for (x_idx = 0; x_idx < mi_width; x_idx++) {
       if ((xd->mb_to_right_edge >> (3 + MI_SIZE_LOG2)) + mi_width > x_idx &&
           (xd->mb_to_bottom_edge >> (3 + MI_SIZE_LOG2)) + mi_height > y) {
+        // The shared tree points each 4x4 at the block's mode info; the luma
+        // and chroma trees copy it into each 4x4's own element.
+        if (xd->tree_type == SHARED_PART) {
+          xd->mi[x_idx + y * mis] = mi_addr;
+          continue;
+        }
         const int mi_idx =
             get_alloc_mi_idx(mi_params, mi_row + y, mi_col + x_idx);
-        xd->mi[x_idx + y * mis] = &mi_params->mi_alloc[mi_idx];
+        xd->mi[x_idx + y * mis] = get_alloc_mi(mi_params, mi_idx);
         if (xd->tree_type == LUMA_PART) {
           *(xd->mi[x_idx + y * mis]) = *mi_addr;
         } else if (xd->tree_type == CHROMA_PART) {
@@ -359,8 +365,6 @@ void av2_update_state(const AV2_COMP *const cpi, ThreadData *td,
           for (i = PALETTE_MAX_SIZE; i < 3 * PALETTE_MAX_SIZE; i++)
             xd->mi[x_idx + y * mis]->palette_mode_info.palette_colors[i] =
                 mi_addr->palette_mode_info.palette_colors[i];
-        } else {
-          xd->mi[x_idx + y * mis] = mi_addr;
         }
       }
     }
@@ -788,6 +792,9 @@ static void set_partial_sb_partition(const AV2_COMMON *const cm,
       const int grid_index = get_mi_grid_idx(&cm->mi_params, r, c);
       const int mi_index = get_alloc_mi_idx(&cm->mi_params, r, c);
       mib[grid_index] = mi + mi_index;
+      if (cm->mi_params.mi_alloc_written)
+        cm->mi_params.mi_alloc_written[mi - cm->mi_params.mi_alloc +
+                                       mi_index] = 1;
       mib[grid_index]->sb_type[PLANE_TYPE_Y] =
           mib[grid_index]->sb_type[PLANE_TYPE_UV] = find_partition_size(
               bsize, mi_rows_remaining - r, mi_cols_remaining - c, &bh, &bw);
@@ -824,6 +831,9 @@ void av2_set_fixed_partitioning(AV2_COMP *cpi, const TileInfo *const tile,
         const int grid_index = get_mi_grid_idx(mi_params, block_row, block_col);
         const int mi_index = get_alloc_mi_idx(mi_params, block_row, block_col);
         mib[grid_index] = mi_upper_left + mi_index;
+        if (mi_params->mi_alloc_written)
+          mi_params->mi_alloc_written[mi_upper_left - mi_params->mi_alloc +
+                                      mi_index] = 1;
         mib[grid_index]->sb_type[PLANE_TYPE_Y] = bsize;
         mib[grid_index]->sb_type[PLANE_TYPE_UV] = bsize;
       }
@@ -1202,7 +1212,7 @@ void av2_restore_sb_state(const SB_FIRST_PASS_STATS *sb_fp_stats, AV2_COMP *cpi,
          sizeof(sb_fp_stats->thresh_freq_fact));
 
   const int alloc_mi_idx = get_alloc_mi_idx(&cm->mi_params, mi_row, mi_col);
-  cm->mi_params.mi_alloc[alloc_mi_idx].current_qindex =
+  get_alloc_mi(&cm->mi_params, alloc_mi_idx)->current_qindex =
       sb_fp_stats->current_qindex;
   x->e_mbd.ref_mv_bank = sb_fp_stats->ref_mv_bank;
   x->e_mbd.warp_param_bank = sb_fp_stats->warp_param_bank;

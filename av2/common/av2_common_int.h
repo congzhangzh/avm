@@ -1619,6 +1619,12 @@ struct CommonModeInfoParams {
    */
   MB_MODE_INFO *mi_alloc;
   /*!
+   * Encoder only (NULL otherwise): one byte per 'mi_alloc' element, set when
+   * the element is handed out with get_alloc_mi(), so the next frame clears
+   * only the elements written instead of the whole array.
+   */
+  uint8_t *mi_alloc_written;
+  /*!
    * An array of SUBMB_INFO structs for every 'mi_alloc_bsize' sized block
    * in the frame.
    */
@@ -4211,6 +4217,15 @@ static INLINE int get_alloc_mi_idx(const CommonModeInfoParams *const mi_params,
   return mi_alloc_row * mi_params->mi_alloc_stride + mi_alloc_col;
 }
 
+// Returns mi_params->mi_alloc[mi_alloc_idx] for writing; the encoder notes
+// the element so that it is cleared before the next frame.
+static INLINE MB_MODE_INFO *get_alloc_mi(
+    const CommonModeInfoParams *const mi_params, int mi_alloc_idx) {
+  if (mi_params->mi_alloc_written)
+    mi_params->mi_alloc_written[mi_alloc_idx] = 1;
+  return &mi_params->mi_alloc[mi_alloc_idx];
+}
+
 // For this partition block, set pointers in mi_params->mi_grid_base and xd->mi.
 static INLINE void set_mi_offsets(const CommonModeInfoParams *const mi_params,
                                   MACROBLOCKD *const xd, int mi_row, int mi_col,
@@ -4219,7 +4234,7 @@ static INLINE void set_mi_offsets(const CommonModeInfoParams *const mi_params,
   // 'mi_grid_base' should point to appropriate memory in 'mi'.
   const int mi_grid_idx = get_mi_grid_idx(mi_params, mi_row, mi_col);
   const int mi_alloc_idx = get_alloc_mi_idx(mi_params, mi_row, mi_col);
-  mi_params->mi_grid_base[mi_grid_idx] = &mi_params->mi_alloc[mi_alloc_idx];
+  mi_params->mi_grid_base[mi_grid_idx] = get_alloc_mi(mi_params, mi_alloc_idx);
   // 'xd->mi' should point to an offset in 'mi_grid_base';
   xd->mi = mi_params->mi_grid_base + mi_grid_idx;
   mi_params->submi_grid_base[mi_grid_idx] =
@@ -4254,7 +4269,7 @@ static INLINE void set_blk_offsets(const CommonModeInfoParams *const mi_params,
       get_mi_grid_idx(mi_params, mi_row + blk_row, mi_col + blk_col);
   const int mi_alloc_idx =
       get_alloc_mi_idx(mi_params, mi_row + blk_row, mi_col + blk_col);
-  mi_params->mi_grid_base[mi_grid_idx] = &mi_params->mi_alloc[mi_alloc_idx];
+  mi_params->mi_grid_base[mi_grid_idx] = get_alloc_mi(mi_params, mi_alloc_idx);
   // 'xd->mi' should point to an offset in 'mi_grid_base';
   xd->mi[mi_params->mi_stride * blk_row + blk_col] =
       mi_params->mi_grid_base[mi_grid_idx];

@@ -16,6 +16,7 @@
 #include "av2/encoder/encodeframe_utils.h"
 #include "av2/encoder/encoder.h"
 #include "av2/encoder/encoder_alloc.h"
+#include "av2/encoder/encoder_utils.h"
 #include "av2/encoder/ethread.h"
 #include "av2/encoder/firstpass.h"
 #include "av2/encoder/global_motion.h"
@@ -1072,13 +1073,21 @@ typedef struct {
   ClearRegion region[4];
   int count;
   int num_workers;
+  // Clear only the written mode info elements (region 0 is then unused).
+  CommonModeInfoParams *written_mi;
 } ClearJob;
 
 // Zeroes the worker's (data2) share of every region.
 static int clear_worker_hook(void *arg1, void *arg2) {
   const ClearJob *const job = (const ClearJob *)arg1;
   const size_t i = (size_t)(intptr_t)arg2;
-  for (int k = 0; k < job->count; k++) {
+  if (job->written_mi) {
+    const int size = job->written_mi->mi_alloc_size;
+    const int chunk = (size + job->num_workers - 1) / job->num_workers;
+    const int start = AVMMIN(size, chunk * (int)i);
+    enc_clear_written_mi(job->written_mi, start, AVMMIN(size, start + chunk));
+  }
+  for (int k = job->written_mi ? 1 : 0; k < job->count; k++) {
     const size_t size = job->region[k].size;
     const size_t chunk = (size + job->num_workers - 1) / job->num_workers;
     const size_t start = AVMMIN(size, chunk * i);
@@ -1098,6 +1107,7 @@ void av2_setup_mi_mt(AV2_COMP *cpi) {
   }
   // The same buffers as enc_setup_mi(): the mode info is allocated per 4x4,
   // ~140 MB at 1440p, and clearing it on one thread took ~4 ms a frame.
+  const int written_only = enc_clear_written_mi_only(mi_params);
   const int mi_grid_size =
       mi_params->mi_stride * calc_mi_size(mi_params->mi_rows);
   const ClearJob job = {
@@ -1110,7 +1120,8 @@ void av2_setup_mi_mt(AV2_COMP *cpi) {
       { mi_params->cctx_type_map,
         mi_grid_size * sizeof(*mi_params->cctx_type_map) } },
     4,
-    num_workers
+    num_workers,
+    written_only ? mi_params : NULL
   };
   const AVxWorkerInterface *const winterface = avm_get_worker_interface();
   for (int i = num_workers - 1; i >= 0; i--) {

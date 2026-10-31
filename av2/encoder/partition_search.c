@@ -344,7 +344,7 @@ static void encode_superblock(const AV2_COMP *const cpi, TileDataEnc *tile_data,
           if (y == 0 && x_idx == 0) continue;
           const int mi_idx =
               get_alloc_mi_idx(mi_params, mi_row + y, mi_col + x_idx);
-          xd->mi[x_idx + y * mis] = &mi_params->mi_alloc[mi_idx];
+          xd->mi[x_idx + y * mis] = get_alloc_mi(mi_params, mi_idx);
           xd->mi[x_idx + y * mis]->skip_txfm[PLANE_TYPE_Y] =
               xd->mi[0]->skip_txfm[PLANE_TYPE_Y];
         }
@@ -2099,7 +2099,7 @@ static void build_one_split_tree(AV2_COMMON *const cm, TREE_TYPE tree_type,
   const int mi_grid_idx = get_mi_grid_idx(mi_params, mi_row, mi_col);
   const int mi_alloc_idx = get_alloc_mi_idx(mi_params, mi_row, mi_col);
   MB_MODE_INFO *mi = mi_params->mi_grid_base[mi_grid_idx] =
-      &mi_params->mi_alloc[mi_alloc_idx];
+      get_alloc_mi(mi_params, mi_alloc_idx);
   const int final_bsize = mi->sb_type[PLANE_TYPE_Y];
 
   const int ss_x = cm->seq_params.subsampling_x;

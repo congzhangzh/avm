@@ -81,6 +81,8 @@ static INLINE void set_sb_size(AV2_COMMON *cm, BLOCK_SIZE sb_size) {
 static AVM_INLINE void enc_free_mi(CommonModeInfoParams *mi_params) {
   avm_free(mi_params->mi_alloc);
   mi_params->mi_alloc = NULL;
+  avm_free(mi_params->mi_alloc_written);
+  mi_params->mi_alloc_written = NULL;
   avm_free(mi_params->mi_grid_base);
   mi_params->mi_grid_base = NULL;
   avm_free(mi_params->mi_alloc_sub);
@@ -112,11 +114,40 @@ static AVM_INLINE void stat_stage_set_mb_mi(CommonModeInfoParams *mi_params,
 }
 
 // av2_setup_mi_mt() clears the same buffers on the worker threads.
+// Returns 1 when only the 'mi_alloc' elements written since the last clear
+// need clearing. Otherwise (the first clear of this allocation) starts noting
+// the written ones, and the whole array has to be cleared; if the note cannot
+// be allocated, it is cleared whole every frame.
+static AVM_INLINE int enc_clear_written_mi_only(
+    CommonModeInfoParams *mi_params) {
+  if (mi_params->mi_alloc_written) return 1;
+  mi_params->mi_alloc_written =
+      (uint8_t *)avm_calloc(mi_params->mi_alloc_size, 1);
+  return 0;
+}
+
+// Clears the 'mi_alloc' elements in [start, end) written since the last clear.
+// A frame writes only those at its blocks' top-left corners (~1 % of the
+// elements in realtime inter frames), and the array is large (~140 MB at
+// 1440p).
+static AVM_INLINE void enc_clear_written_mi(CommonModeInfoParams *mi_params,
+                                            int start, int end) {
+  uint8_t *const written = mi_params->mi_alloc_written;
+  for (int i = start; i < end; i++) {
+    if (!written[i]) continue;
+    memset(&mi_params->mi_alloc[i], 0, sizeof(*mi_params->mi_alloc));
+    written[i] = 0;
+  }
+}
+
 static AVM_INLINE void enc_setup_mi(CommonModeInfoParams *mi_params) {
   const int mi_grid_size =
       mi_params->mi_stride * calc_mi_size(mi_params->mi_rows);
-  memset(mi_params->mi_alloc, 0,
-         mi_params->mi_alloc_size * sizeof(*mi_params->mi_alloc));
+  if (enc_clear_written_mi_only(mi_params))
+    enc_clear_written_mi(mi_params, 0, mi_params->mi_alloc_size);
+  else
+    memset(mi_params->mi_alloc, 0,
+           mi_params->mi_alloc_size * sizeof(*mi_params->mi_alloc));
   memset(mi_params->mi_grid_base, 0,
          mi_grid_size * sizeof(*mi_params->mi_grid_base));
   memset(mi_params->tx_type_map, 0,

@@ -1058,7 +1058,7 @@ static AVM_INLINE void bridge_frame_decode_partition(
     const int mi_grid_idx = get_mi_grid_idx(&cm->mi_params, mi_row, mi_col);
     const int mi_alloc_idx = get_alloc_mi_idx(&cm->mi_params, mi_row, mi_col);
     cm->mi_params.mi_grid_base[mi_grid_idx] =
-        &cm->mi_params.mi_alloc[mi_alloc_idx];
+        get_alloc_mi(&cm->mi_params, mi_alloc_idx);
     // 'xd->mi' should point to an offset in 'mi_grid_base';
     xd->mi = cm->mi_params.mi_grid_base + mi_grid_idx;
     xd->mi[0]->sb_type[xd->tree_type == CHROMA_PART] = bsize;
