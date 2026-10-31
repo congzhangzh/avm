@@ -1255,6 +1255,15 @@ enum avme_enc_control_id {
    * (g_usage == AVM_USAGE_GOOD_QUALITY) enables this mode.
    */
   AV2E_SET_ENABLE_LOW_COMPLEXITY_DECODE = 186,
+
+  /*!\brief Codec control function to set a time budget per frame, in
+   * milliseconds, for realtime speed 10, unsigned int parameter. While the
+   * encoder's recent inter frames take longer than this, speed 10 decides
+   * camera blocks with its fastest setting (fewer bits are saved). 0 (the
+   * default) turns it off. When on, the stream depends on how fast the
+   * machine encodes.
+   */
+  AV2E_SET_RT_TIME_BUDGET_MS = 187,
 };
 
 /*!\brief avm 1-D scaling mode
@@ -1785,6 +1794,9 @@ AVM_CTRL_USE_TYPE(AV2E_SET_FORCE_DEFERRED_FRAMES_FOR_RAS_TEST, int)
 
 AVM_CTRL_USE_TYPE(AV2E_SET_ENABLE_LOW_COMPLEXITY_DECODE, unsigned int)
 #define AVME_CTRL_AV2E_SET_ENABLE_LOW_COMPLEXITY_DECODE
+
+AVM_CTRL_USE_TYPE(AV2E_SET_RT_TIME_BUDGET_MS, unsigned int)
+#define AVM_CTRL_AV2E_SET_RT_TIME_BUDGET_MS
 /*!\endcond */
 /*! @} - end defgroup avm_encoder */
 #ifdef __cplusplus

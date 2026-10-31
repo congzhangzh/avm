@@ -246,6 +246,7 @@ struct av2_extracfg {
   int multi_layers_lag_test;
   int force_deferred_frames_for_ras_test;
   unsigned int enable_low_complexity_decode;
+  unsigned int rt_time_budget_ms;
 };
 
 // Example subgop configs. Currently not used by default.
@@ -576,6 +577,7 @@ static struct av2_extracfg default_extra_cfg = {
   0,      // multi_layers_test for nozero lag
   0,      // force_deferred_frames_for_ras_test
   0,      // enable_low_complexity_decode
+  0,      // rt_time_budget_ms
 };
 // clang-format on
 
@@ -735,6 +737,7 @@ static avm_codec_err_t validate_config(avm_codec_alg_priv_t *ctx,
               AVM_SUPERBLOCK_SIZE_DYNAMIC);
 
   RANGE_CHECK_HI(extra_cfg, row_mt, 1);
+  RANGE_CHECK_HI(extra_cfg, rt_time_budget_ms, 10000);
 
   RANGE_CHECK_HI(extra_cfg, tile_columns, 6);
   RANGE_CHECK_HI(extra_cfg, tile_rows, 6);
@@ -1779,6 +1782,7 @@ static avm_codec_err_t set_encoder_config(AV2EncoderConfig *oxcf,
   }
 
   oxcf->row_mt = extra_cfg->row_mt;
+  oxcf->rt_time_budget_ms = extra_cfg->rt_time_budget_ms;
 
   // Set motion mode related configuration.
   int seq_enabled_motion_modes = (1 << SIMPLE_TRANSLATION);
@@ -2125,6 +2129,13 @@ static avm_codec_err_t ctrl_set_row_mt(avm_codec_alg_priv_t *ctx,
                                        va_list args) {
   struct av2_extracfg extra_cfg = ctx->extra_cfg;
   extra_cfg.row_mt = CAST(AV2E_SET_ROW_MT, args);
+  return update_extra_cfg(ctx, &extra_cfg);
+}
+
+static avm_codec_err_t ctrl_set_rt_time_budget_ms(avm_codec_alg_priv_t *ctx,
+                                                  va_list args) {
+  struct av2_extracfg extra_cfg = ctx->extra_cfg;
+  extra_cfg.rt_time_budget_ms = CAST(AV2E_SET_RT_TIME_BUDGET_MS, args);
   return update_extra_cfg(ctx, &extra_cfg);
 }
 
@@ -4127,6 +4138,9 @@ static avm_codec_err_t encoder_set_option(avm_codec_alg_priv_t *ctx,
   } else if (avm_arg_match_helper(&arg, &g_av2_codec_arg_defs.rowmtarg, argv,
                                   err_string)) {
     extra_cfg.row_mt = avm_arg_parse_uint_helper(&arg, err_string);
+  } else if (avm_arg_match_helper(&arg, &g_av2_codec_arg_defs.rt_time_budget_ms,
+                                  argv, err_string)) {
+    extra_cfg.rt_time_budget_ms = avm_arg_parse_uint_helper(&arg, err_string);
   } else if (avm_arg_match_helper(&arg, &g_av2_codec_arg_defs.tile_cols, argv,
                                   err_string)) {
     extra_cfg.tile_columns = avm_arg_parse_uint_helper(&arg, err_string);
@@ -4794,6 +4808,7 @@ static avm_codec_ctrl_fn_map_t encoder_ctrl_maps[] = {
   { AVME_SET_SHARPNESS, ctrl_set_sharpness },
   { AVME_SET_STATIC_THRESHOLD, ctrl_set_static_thresh },
   { AV2E_SET_ROW_MT, ctrl_set_row_mt },
+  { AV2E_SET_RT_TIME_BUDGET_MS, ctrl_set_rt_time_budget_ms },
   { AV2E_SET_TILE_COLUMNS, ctrl_set_tile_columns },
   { AV2E_SET_TILE_ROWS, ctrl_set_tile_rows },
   { AV2E_SET_ENABLE_TPL_MODEL, ctrl_set_enable_tpl_model },

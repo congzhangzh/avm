@@ -9262,7 +9262,8 @@ static void nonrd_score_inter_cands(
     top[i].ref = NONE_FRAME;
     top[i].drl = 0;
   }
-  const int best_ref_only = cpi->sf.rt_sf.nonrd_newmv_best_ref;
+  const int best_ref_only =
+      cpi->sf.rt_sf.nonrd_newmv_best_ref || cpi->rt_over_budget;
   unsigned int best_full_sad = UINT_MAX;
   MV_REFERENCE_FRAME best_full_ref = NONE_FRAME;
   FULLPEL_MV best_full = kZeroFullMv;
@@ -9684,9 +9685,11 @@ void av2_rd_pick_inter_mode_sb(struct AV2_COMP *cpi,
   // best. One spare candidate stands in for one that turns out invalid (a
   // NEWMV whose search ends on its predicted vector).
   NonrdInterCand nonrd_top[NONRD_MAX_INTER_CANDS];
+  // Over the realtime time budget (oxcf.rt_time_budget_ms), one candidate.
   const int nonrd_k =
       !static_blk && bsize != BLOCK_4X4 && !features->allow_screen_content_tools
-          ? sf->rt_sf.nonrd_inter_cands
+          ? (cpi->rt_over_budget ? AVMMIN(sf->rt_sf.nonrd_inter_cands, 1)
+                                 : sf->rt_sf.nonrd_inter_cands)
           : 0;
   int nonrd_num = AVMMIN(nonrd_k + (nonrd_k > 0), NONRD_MAX_INTER_CANDS);
   if (nonrd_num) {

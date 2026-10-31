@@ -1207,6 +1207,10 @@ typedef struct AV2EncoderConfig {
   // Indicates if row-based multi-threading should be enabled or not.
   bool row_mt;
 
+  // Realtime speed 10: time budget per frame in ms (0: off). See
+  // AV2E_SET_RT_TIME_BUDGET_MS.
+  unsigned int rt_time_budget_ms;
+
   // Configuration related to layering information.
   LayerCfg layer_cfg;
 
@@ -2714,6 +2718,18 @@ typedef struct AV2_COMP {
    * KEY frame or ARF frame.
    */
   YV12_BUFFER_CONFIG alt_ref_buffer;
+
+  /*!
+   * With oxcf.rt_time_budget_ms: moving average of the time the recent inter
+   * frames took to encode, in microseconds (0: none yet).
+   */
+  int64_t rt_frame_us_avg;
+
+  /*!
+   * With oxcf.rt_time_budget_ms: 1 while the recent inter frames were over
+   * the budget; speed 10 then decides camera blocks its fastest way.
+   */
+  int rt_over_budget;
 
 #if CONFIG_INTERNAL_STATS
   /*!\cond */

@@ -126,6 +126,7 @@ typedef struct av2_codec_arg_definitions {
 #if CONFIG_AV2_ENCODER
   arg_def_t cpu_used_av2;
   arg_def_t rowmtarg;
+  arg_def_t rt_time_budget_ms;
   arg_def_t tile_cols;
   arg_def_t tile_rows;
   arg_def_t enable_tpl_model;

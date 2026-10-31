@@ -384,6 +384,7 @@ const arg_def_t *av2_key_val_args[] = {
   &g_av2_codec_arg_defs.reduced_tx_part_set,
   &g_av2_codec_arg_defs.reduced_tx_type_set,
   &g_av2_codec_arg_defs.rowmtarg,
+  &g_av2_codec_arg_defs.rt_time_budget_ms,
   &g_av2_codec_arg_defs.scan_type_info_present_flag,
   &g_av2_codec_arg_defs.select_cfl_ds_filter,
   &g_av2_codec_arg_defs.set_min_cr,

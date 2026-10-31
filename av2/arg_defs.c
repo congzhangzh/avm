@@ -327,6 +327,11 @@ const av2_codec_arg_definitions_t g_av2_codec_arg_defs = {
   .rowmtarg =
       ARG_DEF(NULL, "row-mt", 1,
               "Enable row based multi-threading (0: off (default), 1: on)"),
+  .rt_time_budget_ms =
+      ARG_DEF(NULL, "rt-time-budget-ms", 1,
+              "Realtime speed 10: time budget per frame in ms; while recent "
+              "frames take longer, use the fastest decision (0: off, "
+              "default)"),
   .tile_cols =
       ARG_DEF(NULL, "tile-columns", 1, "Number of tile columns to use, log2"),
   .tile_rows =

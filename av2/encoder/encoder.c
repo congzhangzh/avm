@@ -5637,6 +5637,8 @@ int av2_get_compressed_data(AV2_COMP *cpi, unsigned int *frame_flags,
   struct avm_usec_timer cmptimer;
   avm_usec_timer_start(&cmptimer);
 #endif
+  struct avm_usec_timer budget_timer;
+  if (oxcf->rt_time_budget_ms) avm_usec_timer_start(&budget_timer);
 
   av2_set_high_precision_mv(cpi, MV_PRECISION_ONE_EIGHTH_PEL);
 
@@ -5661,6 +5663,22 @@ int av2_get_compressed_data(AV2_COMP *cpi, unsigned int *frame_flags,
   }
   if (result != AVM_CODEC_OK) {
     return AVM_CODEC_ERROR;
+  }
+  if (oxcf->rt_time_budget_ms && *size > 0 && !frame_is_intra_only(cm)) {
+    // Realtime time budget: a moving average of the inter frames' encode
+    // times (keyframes would swamp it). Over the budget, speed 10 switches
+    // to its fastest decision; back under 85 % of it, to the normal one
+    // (the fastest decision takes ~10 % less time, so the margin keeps it
+    // from flipping every frame).
+    avm_usec_timer_mark(&budget_timer);
+    const int64_t us = avm_usec_timer_elapsed(&budget_timer);
+    cpi->rt_frame_us_avg =
+        cpi->rt_frame_us_avg ? (3 * cpi->rt_frame_us_avg + us) / 4 : us;
+    const int64_t budget_us = (int64_t)oxcf->rt_time_budget_ms * 1000;
+    if (cpi->rt_frame_us_avg > budget_us)
+      cpi->rt_over_budget = 1;
+    else if (cpi->rt_frame_us_avg * 100 < budget_us * 85)
+      cpi->rt_over_budget = 0;
   }
 #if CONFIG_INTERNAL_STATS
   avm_usec_timer_mark(&cmptimer);
