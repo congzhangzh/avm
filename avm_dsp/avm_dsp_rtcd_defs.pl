@@ -546,6 +546,7 @@ if (avm_config("CONFIG_AV2_ENCODER") eq "yes") {
   # Avg
   #
   add_proto qw/unsigned int avm_highbd_avg_8x8/, "const uint16_t *, int p";
+  specialize qw/avm_highbd_avg_8x8 sse2 neon/;
   add_proto qw/unsigned int avm_highbd_avg_4x4/, "const uint16_t *, int p";
   add_proto qw/void avm_highbd_minmax_8x8/, "const uint16_t *s, int p, const uint16_t *d, int dp, int *min, int *max";
 

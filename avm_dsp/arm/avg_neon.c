@@ -101,3 +101,11 @@ int avm_vector_var_neon(const int16_t *ref, const int16_t *src, const int bwl) {
   const int var = sse - (int)(meansq >> (bwl + 2));
   return var;
 }
+
+// Pixels are at most 12 bits, so the eight rows of a column add up to at most
+// 8 * 4095 in a 16-bit lane.
+unsigned int avm_highbd_avg_8x8_neon(const uint16_t *s, int p) {
+  uint16x8_t sum = vld1q_u16(s);
+  for (int i = 1; i < 8; ++i) sum = vaddq_u16(sum, vld1q_u16(s + i * p));
+  return (vaddlvq_u16(sum) + 32) >> 6;
+}

@@ -235,6 +235,7 @@ if(NOT BUILD_SHARED_LIBS)
     "${AVM_ROOT}/test/subtract_test.cc"
     "${AVM_ROOT}/test/reconinter_test.cc"
     "${AVM_ROOT}/test/sum_squares_test.cc"
+    "${AVM_ROOT}/test/highbd_avg_test.cc"
     "${AVM_ROOT}/test/sse_sum_test.cc"
     "${AVM_ROOT}/test/variance_test.cc"
     "${AVM_ROOT}/test/warp_filter_test.cc"
