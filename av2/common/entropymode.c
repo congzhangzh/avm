@@ -10,7 +10,10 @@
  * aomedia.org/license/patent-license/.
  */
 
+#include <stddef.h>
+
 #include "avm_mem/avm_mem.h"
+#include "avm_ports/avm_once.h"
 
 #include "av2/common/av2_common_int.h"
 #include "av2/common/enums.h"
@@ -981,13 +984,9 @@ static void avg_nmv(nmv_context *nmv_left, nmv_context *nmv_tr, int wt_left,
   }
 }
 
-// In case of row-based multi-threading of encoder, since we always
-// keep a top - right sync, we can average the top - right SB's CDFs and
-// the left SB's CDFs and use the same for current SB's encoding to
-// improve the performance. This function facilitates the averaging
-// of CDF and used only when row-mt is enabled in encoder.
-void av2_avg_cdf_symbols(FRAME_CONTEXT *ctx_left, FRAME_CONTEXT *ctx_tr,
-                         int wt_left, int wt_tr) {
+// Averages every CDF of ctx_left with ctx_tr, field by field.
+static void avg_cdf_fields(FRAME_CONTEXT *ctx_left, FRAME_CONTEXT *ctx_tr,
+                           int wt_left, int wt_tr) {
   unsigned int shift = compute_log2(wt_left + wt_tr);
   assert(shift - 1 < 32);
   unsigned int offset = 1 << (shift - 1);
@@ -1247,6 +1246,97 @@ void av2_avg_cdf_symbols(FRAME_CONTEXT *ctx_left, FRAME_CONTEXT *ctx_tr,
 
   AVERAGE_CDF(ctx_left->coeff_base_ph_cdf, ctx_tr->coeff_base_ph_cdf, 4);
   AVERAGE_CDF(ctx_left->cctx_type_cdf, ctx_tr->cctx_type_cdf, CCTX_TYPES);
+}
+
+// The averaging above walks hundreds of small CDF arrays, each in a loop of a
+// few elements, and the encoder runs it for every superblock (~7 us each on
+// a Zen 5 core). Which elements it averages depends only on the layout of
+// FRAME_CONTEXT, so it is worked out once: avg_cdf_mask[i] is 0xffff for an
+// element avg_cdf_fields() averages and 0 for one it leaves alone (a CDF's
+// trailing slots, the symbols beyond nsymbs). One flat loop over the CDF
+// storage then gives the same result and vectorizes.
+#define AVG_CDF_ELEMS \
+  (offsetof(FRAME_CONTEXT, initialized) / sizeof(avm_cdf_prob))
+static uint16_t avg_cdf_mask[AVG_CDF_ELEMS];
+static size_t avg_cdf_begin, avg_cdf_end;  // the masked range, or 0 and 0
+static int avg_cdf_mask_ok;
+
+static void init_avg_cdf_mask(void) {
+  FRAME_CONTEXT *left = (FRAME_CONTEXT *)avm_calloc(1, sizeof(*left));
+  FRAME_CONTEXT *tr = (FRAME_CONTEXT *)avm_malloc(sizeof(*tr));
+  if (!left || !tr) {
+    avm_free(left);
+    avm_free(tr);
+    return;  // avg_cdf_mask_ok stays 0: the field-by-field path is used
+  }
+  avm_cdf_prob *l = (avm_cdf_prob *)left;
+  avm_cdf_prob *t = (avm_cdf_prob *)tr;
+  for (size_t i = 0; i < AVG_CDF_ELEMS; ++i) t[i] = 2;
+  // Weights 1 and 1: an element averaged once becomes (0 + 2 + 1) >> 1 = 1,
+  // one averaged twice 2. The flat loop is only right if none is averaged
+  // twice and nothing past the CDF storage is touched.
+  avg_cdf_fields(left, tr, 1, 1);
+  int ok = !left->initialized;
+  size_t begin = AVG_CDF_ELEMS, end = 0;
+  for (size_t i = 0; i < AVG_CDF_ELEMS; ++i) {
+    if (l[i] > 1) ok = 0;
+    avg_cdf_mask[i] = l[i] ? 0xffff : 0;
+    if (l[i]) {
+      if (begin == AVG_CDF_ELEMS) begin = i;
+      end = i + 1;
+    }
+  }
+  if (begin == AVG_CDF_ELEMS) begin = 0;
+  avg_cdf_begin = begin;
+  avg_cdf_end = end;
+  avg_cdf_mask_ok = ok;
+  avm_free(left);
+  avm_free(tr);
+}
+
+// l[i] += (t[i] - l[i] + 2^(shift - 1)) >> shift where avg_cdf_mask[i] is
+// set. CDF values are below 2^15, so x = t - l fits an int16_t, and with
+// x = q * 2^shift + r: (x + 2^(shift - 1)) >> shift = q + (bit shift - 1 of
+// x). All in 16 bits, eight or sixteen elements a vector; inlined with a
+// constant shift, which the shifts take as an immediate.
+static AVM_FORCE_INLINE void avg_cdf_flat(avm_cdf_prob *l,
+                                          const avm_cdf_prob *t, size_t begin,
+                                          size_t end, unsigned int shift) {
+  for (size_t i = begin; i < end; ++i) {
+    assert(!avg_cdf_mask[i] || (l[i] < CDF_PROB_TOP && t[i] < CDF_PROB_TOP));
+    const int16_t x = (int16_t)(t[i] - l[i]);
+    const int16_t step = (int16_t)((x >> shift) + ((x >> (shift - 1)) & 1));
+    l[i] = (avm_cdf_prob)(l[i] + ((uint16_t)step & avg_cdf_mask[i]));
+  }
+}
+
+// In case of row-based multi-threading of encoder, since we always
+// keep a top - right sync, we can average the top - right SB's CDFs and
+// the left SB's CDFs and use the same for current SB's encoding to
+// improve the performance. This function facilitates the averaging
+// of CDF and used only when row-mt is enabled in encoder.
+void av2_avg_cdf_symbols(FRAME_CONTEXT *ctx_left, FRAME_CONTEXT *ctx_tr,
+                         int wt_left, int wt_tr) {
+  avm_once(init_avg_cdf_mask);
+  const unsigned int shift = compute_log2(wt_left + wt_tr);
+  assert(shift - 1 < 32);
+  // The callers weigh the left context 2^shift - 1 against 1 (3/1 and 7/1).
+  // Then (l * (2^shift - 1) + t + offset) >> shift = l + ((t - l + offset) >>
+  // shift) exactly (l * 2^shift divides evenly; >> of a negative int floors on
+  // every target AVM builds for), which needs no multiply.
+  if (!avg_cdf_mask_ok || wt_tr != 1 || wt_left + 1 != (1 << shift)) {
+    avg_cdf_fields(ctx_left, ctx_tr, wt_left, wt_tr);
+    return;
+  }
+  avm_cdf_prob *l = (avm_cdf_prob *)ctx_left;
+  const avm_cdf_prob *t = (const avm_cdf_prob *)ctx_tr;
+  if (shift == 2) {
+    avg_cdf_flat(l, t, avg_cdf_begin, avg_cdf_end, 2);  // the encoder's 3/1
+  } else if (shift == 3) {
+    avg_cdf_flat(l, t, avg_cdf_begin, avg_cdf_end, 3);  // the decoder's 7/1
+  } else {
+    avg_cdf_flat(l, t, avg_cdf_begin, avg_cdf_end, shift);
+  }
 }
 
 void av2_setup_frame_contexts(AV2_COMMON *cm) {
