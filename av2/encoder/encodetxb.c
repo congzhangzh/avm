@@ -1701,9 +1701,13 @@ static AVM_FORCE_INLINE int warehouse_efficients_txb(
       coeff_costs->lps_cost_uv;
   int hr_level = 0;
   int c = eob - 1;
+  // Nonzero coefficients at scan positions 1 .. eob - 1, for parity hiding;
+  // counted on the way instead of in a pass of their own.
+  int num_nz = 0;
   {
     const int pos = scan[c];
     const tran_low_t v = qcoeff[pos];
+    num_nz += (c > 0 && v);
     const int sign = AVMSIGN(v);
     const int level = (v ^ sign) - sign;
     const int coeff_ctx = coeff_contexts[pos];
@@ -1809,6 +1813,7 @@ static AVM_FORCE_INLINE int warehouse_efficients_txb(
       }
     }
     if (v) {
+      ++num_nz;
       // sign bit cost
       const bool dc_2dtx = (c == 0);
       const bool dc_hor = (col == 0) && tx_class == TX_CLASS_HORIZ;
@@ -1860,12 +1865,7 @@ static AVM_FORCE_INLINE int warehouse_efficients_txb(
     }
   }
   // c == 0 after previous loop
-  int num_nz = 0;
   hr_level_avg = 0;
-  for (c = eob - 1; c > 0; --c) {
-    const int pos = scan[c];
-    num_nz += !!qcoeff[pos];
-  }
   c = 0;
   if (num_nz >= PHTHRESH && enable_parity_hiding) {
     const int pos = scan[c];
