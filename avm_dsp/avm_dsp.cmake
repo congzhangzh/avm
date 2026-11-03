@@ -256,6 +256,9 @@ if(CONFIG_AV2_ENCODER)
     "${AVM_ROOT}/avm_dsp/x86/blk_sse_sum_avx2.c"
     "${AVM_ROOT}/avm_dsp/x86/sum_squares_avx2.c")
 
+  list(APPEND AVM_DSP_ENCODER_INTRIN_AVX512
+       "${AVM_ROOT}/avm_dsp/x86/sad_highbd_avx512.c")
+
   list(
     APPEND
     AVM_DSP_ENCODER_INTRIN_SSSE3
@@ -395,6 +398,14 @@ function(setup_avm_dsp_targets)
     if(CONFIG_AV2_ENCODER)
       add_intrinsics_object_library("-mavx2" "avx2" "avm_dsp_encoder"
                                     "AVM_DSP_ENCODER_INTRIN_AVX2")
+    endif()
+  endif()
+
+  if(HAVE_AVX512)
+    if(CONFIG_AV2_ENCODER)
+      add_intrinsics_object_library("${AVM_AVX512_FLAGS}" "avx512"
+                                    "avm_dsp_encoder"
+                                    "AVM_DSP_ENCODER_INTRIN_AVX512")
     endif()
   endif()
 

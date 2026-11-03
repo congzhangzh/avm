@@ -26,9 +26,14 @@ function(get_msvc_intrinsic_flag flag translated_flag)
     set(${translated_flag}
         "/arch:AVX2"
         PARENT_SCOPE)
+  elseif("${flag}" STREQUAL "${AVM_AVX512_FLAGS}")
+    set(${translated_flag}
+        "/arch:AVX512"
+        PARENT_SCOPE)
   else()
 
-    # MSVC does not need flags for intrinsics flavors other than AVX/AVX2.
+    # MSVC does not need flags for intrinsics flavors other than AVX, AVX2
+    # and AVX-512.
     unset(${translated_flag} PARENT_SCOPE)
   endif()
 endfunction()

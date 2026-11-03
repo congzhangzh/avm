@@ -148,7 +148,19 @@ elseif("${AVM_TARGET_CPU}" MATCHES "^x86")
          "--exclude=^avm_highbd_convolve8_(horiz|vert)_sse2$")
   endif()
 
-  set(X86_FLAVORS "MMX;SSE;SSE2;SSE3;SSSE3;SSE4_1;SSE4_2;AVX;AVX2")
+  # The AVX-512 kernels use F, CD, BW, DQ and VL (x86_simd_caps() checks the
+  # same set at run time).
+  set(AVM_AVX512_FLAGS "-mavx512f -mavx512cd -mavx512bw -mavx512dq -mavx512vl")
+  if(ENABLE_AVX512 AND NOT MSVC)
+    include(CheckCCompilerFlag)
+    check_c_compiler_flag("${AVM_AVX512_FLAGS}" AVM_COMPILER_HAS_AVX512)
+    if(NOT AVM_COMPILER_HAS_AVX512)
+      message(WARNING "--- The compiler lacks ${AVM_AVX512_FLAGS}: AVX-512 off.")
+      set(ENABLE_AVX512 0)
+    endif()
+  endif()
+
+  set(X86_FLAVORS "MMX;SSE;SSE2;SSE3;SSSE3;SSE4_1;SSE4_2;AVX;AVX2;AVX512")
   foreach(flavor ${X86_FLAVORS})
     if(ENABLE_${flavor} AND NOT disable_remaining_flavors)
       set(HAVE_${flavor} 1)

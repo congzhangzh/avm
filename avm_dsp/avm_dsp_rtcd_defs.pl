@@ -542,6 +542,15 @@ if (avm_config("CONFIG_AV2_ENCODER") eq "yes") {
   specialize qw/avm_highbd_sad_skip_4x64x4d  sse2/;
   specialize qw/avm_highbd_sad_skip_64x4x4d  avx2/;
 
+  # AVX-512 (sad_highbd_avx512.c): the 4-way versions of blocks whose width
+  # is a multiple of 16.
+  foreach (@block_sizes) {
+    ($w, $h) = @$_;
+    next if ($w % 16 != 0);
+    specialize "avm_highbd_sad${w}x${h}x4d", qw/avx512/;
+    specialize "avm_highbd_sad_skip_${w}x${h}x4d", qw/avx512/;
+  }
+
   #
   # Avg
   #
