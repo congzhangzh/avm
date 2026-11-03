@@ -164,6 +164,7 @@ static INLINE uint64_t xgetbv(void) {
 #define HAS_AVX 0x40
 #define HAS_AVX2 0x80
 #define HAS_SSE4_2 0x100
+#define HAS_AVX512 0x200
 #ifndef BIT
 #define BIT(n) (1 << n)
 #endif
@@ -215,6 +216,16 @@ static INLINE int x86_simd_caps(void) {
         cpuid(7, 0, reg_eax, reg_ebx, reg_ecx, reg_edx);
 
         if (reg_ebx & BIT(5)) flags |= HAS_AVX2;
+
+        // AVX-512 as the kernels use it: F (bit 16), DQ (17), CD (28),
+        // BW (30) and VL (31), with the OS saving the opmask and ZMM state
+        // (XCR0 bits 5-7) as well as XMM and YMM (bits 1-2).
+        const unsigned int avx512_bits =
+            BIT(16) | BIT(17) | BIT(28) | BIT(30) | (1u << 31);
+        if ((reg_ebx & avx512_bits) == avx512_bits &&
+            (xgetbv() & 0xe6) == 0xe6) {
+          flags |= HAS_AVX512;
+        }
       }
     }
   }
