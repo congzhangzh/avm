@@ -3377,6 +3377,18 @@ motion_field_projection_side(AV2_COMMON *cm, MV_REFERENCE_FRAME start_frame,
   MV last_ref_mv = { 0, 0 };
   int last_proj_ready = 0;
   MV last_proj_mv = { 0, 0 };
+  int last_row_offset = 0;
+  int last_col_offset = 0;
+
+  // Frame constants for the positions below, read once: the uint8_t store to
+  // ref_frame_offset may alias *cm, which would reload them for every block.
+  const int stepl2 = cm->tmvp_sample_stepl2;
+  const int tmvp_rows = cm->mi_params.mi_rows >> TMVP_SHIFT_BITS;
+  const int tmvp_cols = cm->mi_params.mi_cols >> TMVP_SHIFT_BITS;
+  const int proc_size = cm->tmvp_proc_size;
+  const int proc_sizel2 = cm->tmvp_proc_sizel2;
+  const int tmvp_col_offset = cm->tmvp_col_offset;
+  TPL_MV_REF **const tpl_mvs_rows = cm->tpl_mvs_rows;
 
   assert(cm->tmvp_sample_step > 0);
   for (int blk_row = row_start; blk_row < AVMMIN(row_end, start_mvs_rows);
@@ -3430,25 +3442,34 @@ motion_field_projection_side(AV2_COMMON *cm, MV_REFERENCE_FRAME start_frame,
             if (!last_proj_ready) {
               tip_get_mv_projection(&last_proj_mv, ref_mv,
                                     temporal_scale_factor[ref_frame]);
+              last_row_offset = tmvp_mv_offset(last_proj_mv.row);
+              last_col_offset = tmvp_mv_offset(last_proj_mv.col);
               last_proj_ready = 1;
             }
             this_mv.as_mv = last_proj_mv;
-            pos_valid = get_block_position_no_constraint(
-                cm, &mi_r, &mi_c, scaled_blk_row, scaled_blk_col, this_mv.as_mv,
-                0);
+            // get_block_position_no_constraint() with the offsets of this_mv.
+            const int row = scaled_blk_row + last_row_offset;
+            const int col = scaled_blk_col + last_col_offset;
+            pos_valid =
+                row >= 0 && row < tmvp_rows && col >= 0 && col < tmvp_cols;
+            if (pos_valid) {
+              mi_r = row;
+              mi_c = col;
+            }
           } else {
             this_mv.as_int = 0;
           }
-          mi_r = (mi_r >> cm->tmvp_sample_stepl2) << cm->tmvp_sample_stepl2;
-          mi_c = (mi_c >> cm->tmvp_sample_stepl2) << cm->tmvp_sample_stepl2;
+          mi_r = (mi_r >> stepl2) << stepl2;
+          mi_c = (mi_c >> stepl2) << stepl2;
 
           if (pos_valid)
-            pos_valid = check_block_position(cm, scaled_blk_row, scaled_blk_col,
-                                             mi_r, mi_c);
+            pos_valid = check_block_position_in(
+                tmvp_rows, tmvp_cols, proc_size, proc_sizel2, tmvp_col_offset,
+                scaled_blk_row, scaled_blk_col, mi_r, mi_c);
           if (pos_valid) {
-            if (cm->tpl_mvs_rows[mi_r][mi_c].mfmv0.as_int == INVALID_MV ||
+            if (tpl_mvs_rows[mi_r][mi_c].mfmv0.as_int == INVALID_MV ||
                 (target_frame != -1 && end_frame == target_frame &&
-                 cm->tpl_mvs_rows[mi_r][mi_c].ref_frame_offset !=
+                 tpl_mvs_rows[mi_r][mi_c].ref_frame_offset !=
                      ref_abs_offset[ref_frame])) {
               if (cm->seq_params.enable_mv_traj) {
                 int blk_id_k = get_blk_id_k(mi_c, cm->tmvp_proc_sizel2);
@@ -3505,9 +3526,9 @@ motion_field_projection_side(AV2_COMMON *cm, MV_REFERENCE_FRAME start_frame,
                 ref_mv.col = -ref_mv.col;
                 ref_frame_offset = ref_abs_offset[ref_frame];
               }
-              cm->tpl_mvs_rows[mi_r][mi_c].mfmv0.as_mv.row = ref_mv.row;
-              cm->tpl_mvs_rows[mi_r][mi_c].mfmv0.as_mv.col = ref_mv.col;
-              cm->tpl_mvs_rows[mi_r][mi_c].ref_frame_offset = ref_frame_offset;
+              tpl_mvs_rows[mi_r][mi_c].mfmv0.as_mv.row = ref_mv.row;
+              tpl_mvs_rows[mi_r][mi_c].mfmv0.as_mv.col = ref_mv.col;
+              tpl_mvs_rows[mi_r][mi_c].ref_frame_offset = ref_frame_offset;
             }
           }
         }

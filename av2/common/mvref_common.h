@@ -105,24 +105,41 @@ static AVM_INLINE void get_proc_size_and_offset(AV2_COMMON *cm) {
   }
 }
 
-static AVM_INLINE int check_block_position(const AV2_COMMON *cm, int row,
-                                           int col, int blk_row, int blk_col) {
-  const int sb_tmvp_size = cm->tmvp_proc_size;
-  const int sb_tmvp_size_log2 = cm->tmvp_proc_sizel2;
+// check_block_position() with the frame's TMVP geometry passed as values
+// (rows and columns in TMVP units, the processing size, its log2 and the
+// column offset), for loops that read them once.
+static AVM_INLINE int check_block_position_in(int tmvp_rows, int tmvp_cols,
+                                              int sb_tmvp_size,
+                                              int sb_tmvp_size_log2,
+                                              int tmvp_col_offset, int row,
+                                              int col, int blk_row,
+                                              int blk_col) {
   const int base_blk_row = (blk_row >> sb_tmvp_size_log2) << sb_tmvp_size_log2;
   const int base_blk_col = (blk_col >> sb_tmvp_size_log2) << sb_tmvp_size_log2;
 
-  if (row < 0 || row >= (cm->mi_params.mi_rows >> TMVP_SHIFT_BITS) || col < 0 ||
-      col >= (cm->mi_params.mi_cols >> TMVP_SHIFT_BITS))
-    return 0;
+  if (row < 0 || row >= tmvp_rows || col < 0 || col >= tmvp_cols) return 0;
 
   if (row < base_blk_row - MAX_OFFSET_HEIGHT_LOG2 ||
       row >= base_blk_row + sb_tmvp_size + MAX_OFFSET_HEIGHT_LOG2 ||
-      col < base_blk_col - cm->tmvp_col_offset ||
-      col >= base_blk_col + sb_tmvp_size + cm->tmvp_col_offset)
+      col < base_blk_col - tmvp_col_offset ||
+      col >= base_blk_col + sb_tmvp_size + tmvp_col_offset)
     return 0;
 
   return 1;
+}
+
+static AVM_INLINE int check_block_position(const AV2_COMMON *cm, int row,
+                                           int col, int blk_row, int blk_col) {
+  return check_block_position_in(
+      cm->mi_params.mi_rows >> TMVP_SHIFT_BITS,
+      cm->mi_params.mi_cols >> TMVP_SHIFT_BITS, cm->tmvp_proc_size,
+      cm->tmvp_proc_sizel2, cm->tmvp_col_offset, row, col, blk_row, blk_col);
+}
+
+// A motion vector component (1/8 pel) in TMVP units, rounded towards zero.
+static AVM_INLINE int tmvp_mv_offset(int v) {
+  const int shift = (3 + TMVP_MI_SZ_LOG2);
+  return (v >= 0) ? (v >> shift) : -((-v) >> shift);
 }
 
 static AVM_INLINE int get_block_position_no_constraint(const AV2_COMMON *cm,
@@ -130,11 +147,8 @@ static AVM_INLINE int get_block_position_no_constraint(const AV2_COMMON *cm,
                                                        int blk_row, int blk_col,
                                                        MV mv, int sign_bias) {
   // The motion vector in units of 1/8-pel
-  const int shift = (3 + TMVP_MI_SZ_LOG2);
-  const int row_offset =
-      (mv.row >= 0) ? (mv.row >> shift) : -((-mv.row) >> shift);
-  const int col_offset =
-      (mv.col >= 0) ? (mv.col >> shift) : -((-mv.col) >> shift);
+  const int row_offset = tmvp_mv_offset(mv.row);
+  const int col_offset = tmvp_mv_offset(mv.col);
 
   const int row =
       (sign_bias == 1) ? blk_row - row_offset : blk_row + row_offset;
