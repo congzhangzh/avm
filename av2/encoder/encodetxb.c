@@ -325,6 +325,26 @@ static int get_eob_cost(int eob, const LV_MAP_EOB_COST *txb_eob_costs,
   return eob_cost;
 }
 
+// get_adaptive_hr_length(), inlined and without branches, for the coefficient
+// cost helpers below: the call and the loop in get_adaptive_param()
+// mispredicted on data-dependent levels and contexts. Same arithmetic:
+// get_adaptive_param() returns 1 plus the number of its thresholds
+// { 4, 8, 16, 32, 64 } that ctx reaches, which for these powers of two is
+// AVMMIN(get_msb(AVMMAX(ctx, 0) | 2), 6): 1 for ctx < 4, 2 for 4 .. 7, ...,
+// 6 from 64 on. get_truncated_rice_length() with k = m + 1 and
+// cmax = AVMMIN(m + 4, 6) is then a select between its two returns. The
+// Exp-Golomb argument is clamped to 0 when it is unused, so get_msb() never
+// sees 0 (it is at least 1 << k).
+static AVM_FORCE_INLINE int get_hr_length(int level, int ctx) {
+  const int m = AVMMIN(get_msb((unsigned int)AVMMAX(ctx, 0) | 2), 6);
+  const int k = m + 1;
+  const int cmax = AVMMIN(m + 4, 6);
+  const int q = level >> m;
+  const int escape = AVMMAX(level - (cmax << m), 0);
+  const int golomb = 2 * get_msb(escape + (1 << k)) + 1 - k;
+  return q >= cmax ? cmax + golomb : q + 1 + m;
+}
+
 static AVM_FORCE_INLINE int get_br_ph_cost(tran_low_t level, int hr_ctx,
                                            int *hr_level) {
   int cost = 0;
@@ -332,7 +352,7 @@ static AVM_FORCE_INLINE int get_br_ph_cost(tran_low_t level, int hr_ctx,
   if (level >= 1 + NUM_BASE_LEVELS) {
     const int r = level - NUM_BASE_LEVELS - 1;
     *hr_level = r;
-    cost += av2_cost_literal(get_adaptive_hr_length(r, hr_ctx));
+    cost += av2_cost_literal(get_hr_length(r, hr_ctx));
   }
   return cost;
 }
@@ -340,15 +360,13 @@ static AVM_FORCE_INLINE int get_br_ph_cost(tran_low_t level, int hr_ctx,
 static AVM_FORCE_INLINE int get_br_cost(tran_low_t level, const int *coeff_lps,
                                         int hr_ctx, int *hr_level) {
   const int base_range = AVMMIN(level - 1 - NUM_BASE_LEVELS, COEFF_BASE_RANGE);
-  int cost = coeff_lps[base_range];
-
-  *hr_level = 0;
-  if (level >= 1 + NUM_BASE_LEVELS + COEFF_BASE_RANGE) {
-    const int r = level - COEFF_BASE_RANGE - NUM_BASE_LEVELS - 1;
-    *hr_level = r;
-    cost += av2_cost_literal(get_adaptive_hr_length(r, hr_ctx));
-  }
-  return cost;
+  const int r = level - COEFF_BASE_RANGE - NUM_BASE_LEVELS - 1;
+  // keep is -1 when r >= 0, else 0 (the idiom of negative_to_zero()), so the
+  // high-range part is added without a branch on the level.
+  const int keep = ~(r >> (sizeof(r) * 8 - 1));
+  *hr_level = r & keep;
+  return coeff_lps[base_range] +
+         (av2_cost_literal(get_hr_length(r & keep, hr_ctx)) & keep);
 }
 
 static AVM_FORCE_INLINE int get_br_lf_cost_uv(tran_low_t level, int hr_ctx,
@@ -358,7 +376,7 @@ static AVM_FORCE_INLINE int get_br_lf_cost_uv(tran_low_t level, int hr_ctx,
   if (level >= 1 + LF_NUM_BASE_LEVELS) {
     const int r = level - LF_NUM_BASE_LEVELS - 1;
     *hr_level = r;
-    cost += av2_cost_literal(get_adaptive_hr_length(r, hr_ctx));
+    cost += av2_cost_literal(get_hr_length(r, hr_ctx));
   }
   return cost;
 }
@@ -368,15 +386,13 @@ static AVM_FORCE_INLINE int get_br_lf_cost(tran_low_t level,
                                            int *hr_level) {
   const int base_range =
       AVMMIN(level - 1 - LF_NUM_BASE_LEVELS, COEFF_BASE_RANGE);
-  int cost = coeff_lps[base_range];
-
-  *hr_level = 0;
-  if (level >= 1 + LF_NUM_BASE_LEVELS + COEFF_BASE_RANGE) {
-    const int r = level - COEFF_BASE_RANGE - LF_NUM_BASE_LEVELS - 1;
-    *hr_level = r;
-    cost += av2_cost_literal(get_adaptive_hr_length(r, hr_ctx));
-  }
-  return cost;
+  const int r = level - COEFF_BASE_RANGE - LF_NUM_BASE_LEVELS - 1;
+  // keep is -1 when r >= 0, else 0 (the idiom of negative_to_zero()), so the
+  // high-range part is added without a branch on the level.
+  const int keep = ~(r >> (sizeof(r) * 8 - 1));
+  *hr_level = r & keep;
+  return coeff_lps[base_range] +
+         (av2_cost_literal(get_hr_length(r & keep, hr_ctx)) & keep);
 }
 
 static AVM_FORCE_INLINE int get_br_cost_with_diff(tran_low_t level,
@@ -1812,15 +1828,18 @@ static AVM_FORCE_INLINE int warehouse_efficients_txb(
         cost += base_cost[coeff_ctx][0][AVMMIN(level, 3)];
       }
     }
-    if (v) {
-      ++num_nz;
-      // sign bit cost
-      const bool dc_2dtx = (c == 0);
-      const bool dc_hor = (col == 0) && tx_class == TX_CLASS_HORIZ;
-      const bool dc_ver = (row == 0) && tx_class == TX_CLASS_VERT;
-      if (dc_2dtx || dc_hor || dc_ver) {
+    // No branch on v == 0, which is data-dependent and mispredicted: a zero
+    // adds 0 to num_nz and av2_cost_literal(0) == 0 as its sign cost, and
+    // every level test below is false for it.
+    const int nz = (v != 0);
+    num_nz += nz;
+    // sign bit cost; c >= 1 here, so this is never the 2-D DC (dc_2dtx).
+    const bool dc_hor = (col == 0) && tx_class == TX_CLASS_HORIZ;
+    const bool dc_ver = (row == 0) && tx_class == TX_CLASS_VERT;
+    if (dc_hor || dc_ver) {
+      if (v) {
         const int dc_ph_group = 0;  // PH disabled
-        const int dc_sign_ctx = dc_2dtx ? txb_ctx->dc_sign_ctx : 0;
+        const int dc_sign_ctx = 0;
         const int sign = AVMSIGN(v);
         const int sign01 = (sign ^ sign) - sign;
         if (plane == AVM_PLANE_V) {
@@ -1829,37 +1848,36 @@ static AVM_FORCE_INLINE int warehouse_efficients_txb(
         } else {
           cost += coeff_costs->dc_sign_cost[dc_ph_group][dc_sign_ctx][sign01];
         }
-      } else {
-        cost += av2_cost_literal(1);
       }
-      if (plane > 0) {
-        if (limits) {
-          if (level > LF_NUM_BASE_LEVELS) {
-            cost += get_br_lf_cost_uv(level, hr_level_avg, &hr_level);
-            hr_level_avg = (hr_level_avg + hr_level) >> 1;
-          }
-        } else {
-          if (level > NUM_BASE_LEVELS) {
-            const int ctx = get_br_ctx_chroma(levels, pos, bwl, tx_class);
-            cost +=
-                get_br_cost(level, lps_cost_uv[ctx], hr_level_avg, &hr_level);
-            hr_level_avg = (hr_level_avg + hr_level) >> 1;
-          }
+    } else {
+      cost += av2_cost_literal(nz);
+    }
+    if (plane > 0) {
+      if (limits) {
+        if (level > LF_NUM_BASE_LEVELS) {
+          cost += get_br_lf_cost_uv(level, hr_level_avg, &hr_level);
+          hr_level_avg = (hr_level_avg + hr_level) >> 1;
         }
       } else {
-        if (limits) {
-          if (level > LF_NUM_BASE_LEVELS) {
-            const int ctx = get_br_lf_ctx(levels, pos, bwl, tx_class);
-            cost += get_br_lf_cost(level, lps_lf_cost[ctx], hr_level_avg,
-                                   &hr_level);
-            hr_level_avg = (hr_level_avg + hr_level) >> 1;
-          }
-        } else {
-          if (level > NUM_BASE_LEVELS) {
-            const int ctx = get_br_ctx(levels, pos, bwl, tx_class);
-            cost += get_br_cost(level, lps_cost[ctx], hr_level_avg, &hr_level);
-            hr_level_avg = (hr_level_avg + hr_level) >> 1;
-          }
+        if (level > NUM_BASE_LEVELS) {
+          const int ctx = get_br_ctx_chroma(levels, pos, bwl, tx_class);
+          cost += get_br_cost(level, lps_cost_uv[ctx], hr_level_avg, &hr_level);
+          hr_level_avg = (hr_level_avg + hr_level) >> 1;
+        }
+      }
+    } else {
+      if (limits) {
+        if (level > LF_NUM_BASE_LEVELS) {
+          const int ctx = get_br_lf_ctx(levels, pos, bwl, tx_class);
+          cost += get_br_lf_cost(level, lps_lf_cost[ctx], hr_level_avg,
+                                 &hr_level);
+          hr_level_avg = (hr_level_avg + hr_level) >> 1;
+        }
+      } else {
+        if (level > NUM_BASE_LEVELS) {
+          const int ctx = get_br_ctx(levels, pos, bwl, tx_class);
+          cost += get_br_cost(level, lps_cost[ctx], hr_level_avg, &hr_level);
+          hr_level_avg = (hr_level_avg + hr_level) >> 1;
         }
       }
     }
@@ -2114,6 +2132,13 @@ int av2_cost_coeffs_txb(const AV2_COMMON *cm, const MACROBLOCK *x,
     return warehouse_efficients_txb_skip(cm, x, plane, block, tx_size, txb_ctx,
                                          p, eob, coeff_costs, xd, tx_type,
                                          cctx_type, reduced_tx_set_used);
+  } else if (plane == AVM_PLANE_Y && tx_class == TX_CLASS_2D) {
+    // The common case, as its own inlined copy: with plane and tx_class
+    // constant, the coefficient loop loses their tests.
+    return warehouse_efficients_txb(
+        cm, x, AVM_PLANE_Y, block, tx_size, txb_ctx, p, eob, PLANE_TYPE_Y,
+        coeff_costs, xd, tx_type, cctx_type, TX_CLASS_2D, reduced_tx_set_used,
+        enable_parity_hiding, &x->coeff_costs.coeff_costs[0][0]);
   } else {
     return warehouse_efficients_txb(
         cm, x, plane, block, tx_size, txb_ctx, p, eob, plane_type, coeff_costs,
