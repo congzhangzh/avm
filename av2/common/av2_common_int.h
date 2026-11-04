@@ -4240,14 +4240,21 @@ static INLINE void set_mi_offsets(const CommonModeInfoParams *const mi_params,
   mi_params->submi_grid_base[mi_grid_idx] =
       &mi_params->mi_alloc_sub[mi_alloc_idx];
   xd->submi = mi_params->submi_grid_base + mi_grid_idx;
+  // The same pointers as get_alloc_mi_idx() per element (the (0, 0) one is
+  // rewritten with the value it has), with the shift, strides and bases read
+  // once: the stores through SUBMB_INFO ** otherwise make the compiler reload
+  // them for every element (mi_alloc_bsize is a byte, which may alias).
+  const int alloc_log2 = mi_size_wide_log2[mi_params->mi_alloc_bsize];
+  const int alloc_stride = mi_params->mi_alloc_stride;
+  const int mi_stride = mi_params->mi_stride;
+  SUBMB_INFO *const alloc_sub = mi_params->mi_alloc_sub;
+  SUBMB_INFO **const submi = xd->submi;
   for (int y = 0; y < y_inside_boundary; y++) {
-    for (int x = 0; x < x_inside_boundary; x++) {
-      if (x == 0 && y == 0) continue;
-      const int mi_alloc_sub_idx =
-          get_alloc_mi_idx(mi_params, mi_row + y, mi_col + x);
-      xd->submi[y * mi_params->mi_stride + x] =
-          &mi_params->mi_alloc_sub[mi_alloc_sub_idx];
-    }
+    SUBMB_INFO *const row =
+        alloc_sub + ((mi_row + y) >> alloc_log2) * alloc_stride;
+    SUBMB_INFO **const dst = submi + y * mi_stride;
+    for (int x = 0; x < x_inside_boundary; x++)
+      dst[x] = row + ((mi_col + x) >> alloc_log2);
   }
   // 'xd->tx_type_map' should point to an offset in 'mi_params->tx_type_map'.
   if (xd->tree_type != CHROMA_PART) {
