@@ -207,18 +207,29 @@ static AVM_FORCE_INLINE void fwd_dct64_avx512(const void *src, int is_int16,
 //   it.
 // buf is not cleared: each pass reads only lines 0 .. lines - skip_line - 1 of
 // the first 32 (or tx size) samples, all of which the pass before writes.
-void fwd_txfm_avx512(const int16_t *resi, tran_low_t *coeff, int diff_stride,
-                     TxfmParam *txfm_param) {
+#if defined(_MSC_VER)
+#define FWD_TXFM_NOINLINE __declspec(noinline)
+#else
+#define FWD_TXFM_NOINLINE __attribute__((noinline))
+#endif
+
+// The 64-point sizes this file handles: 64x64, 64x32, 32x64, 64x16, 16x64.
+static AVM_INLINE int is_dct64_size(int width, int height) {
+  return (height == 64 && width >= 16) || (width == 64 && height >= 16);
+}
+
+// The work for the 64-point sizes, kept out of line: its 64-byte aligned
+// stack buffer makes the prologue long (stack realignment, saved registers),
+// which every other transform would otherwise pay on its way to AVX2.
+static FWD_TXFM_NOINLINE void fwd_txfm_dct64_avx512(const int16_t *resi,
+                                                    tran_low_t *coeff,
+                                                    int diff_stride,
+                                                    TxfmParam *txfm_param) {
   const TX_SIZE tx_size = txfm_param->tx_size;
   const int width = tx_size_wide[tx_size];
   const int height = tx_size_high[tx_size];
   const int col64 = height == 64 && width >= 16;
   const int row64 = width == 64 && height >= 16;
-
-  if (txfm_param->lossless || !(col64 || row64)) {
-    fwd_txfm_avx2(resi, coeff, diff_stride, txfm_param);
-    return;
-  }
 
   const TX_TYPE tx_type = txfm_param->tx_type;
   int tx_type_row = g_hor_tx_type[tx_type];
@@ -282,4 +293,15 @@ void fwd_txfm_avx512(const int16_t *resi, tran_low_t *coeff, int diff_stride,
       _mm256_storeu_si256((__m256i *)(coeff + i), _mm512_cvtepi64_epi32(v));
     }
   }
+}
+
+void fwd_txfm_avx512(const int16_t *resi, tran_low_t *coeff, int diff_stride,
+                     TxfmParam *txfm_param) {
+  const TX_SIZE tx_size = txfm_param->tx_size;
+  if (txfm_param->lossless ||
+      !is_dct64_size(tx_size_wide[tx_size], tx_size_high[tx_size])) {
+    fwd_txfm_avx2(resi, coeff, diff_stride, txfm_param);
+    return;
+  }
+  fwd_txfm_dct64_avx512(resi, coeff, diff_stride, txfm_param);
 }
