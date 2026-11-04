@@ -809,6 +809,27 @@ static uint8_t get_lossless_flag(
   return this_mi[0] ? cm->features.lossless_segment[this_mi[0]->segment_id] : 0;
 }
 
+// The vertical-edge pass is usually the first to read a superblock's pixels
+// after reconstruction, and they often come from DRAM by then. Prefetching
+// the next 4-row stripe while the current one is filtered hides that latency.
+// A prefetch never changes memory or results, and never faults.
+static AVM_INLINE void prefetch_vert_lpf_stripe(const uint16_t *p, int stride,
+                                                int width) {
+#if defined(__GNUC__)
+  // A vertical edge filter reaches up to 8 pixels left and right of the edge.
+  const char *start = (const char *)(p - 8);
+  const int bytes = (width + 16) * (int)sizeof(*p);
+  for (int r = 0; r < MI_SIZE; ++r) {
+    const char *row = start + (ptrdiff_t)r * stride * (int)sizeof(*p);
+    for (int off = 0; off < bytes; off += 64) __builtin_prefetch(row + off);
+  }
+#else
+  (void)p;
+  (void)stride;
+  (void)width;
+#endif
+}
+
 void av2_filter_block_plane_vert(AV2_COMMON *const cm,
                                  const MACROBLOCKD *const xd, const int plane,
                                  const MACROBLOCKD_PLANE *const plane_ptr,
@@ -845,6 +866,14 @@ void av2_filter_block_plane_vert(AV2_COMMON *const cm,
     uint16_t *p = dst_ptr + y * MI_SIZE * dst_stride;
     uint32_t prev_x =
         (mi_col == 0) ? 0 : ((mi_col - 1) * MI_SIZE) >> scale_horz;
+    if (y == 0 && y + 1 < y_range) {
+      prefetch_vert_lpf_stripe(p + MI_SIZE * dst_stride, dst_stride,
+                               x_range * MI_SIZE);
+    }
+    if (y + 2 < y_range) {
+      prefetch_vert_lpf_stripe(p + 2 * MI_SIZE * dst_stride, dst_stride,
+                               x_range * MI_SIZE);
+    }
 
     AV2_DEBLOCKING_PARAMETERS *params = params_buf;
     TX_SIZE *tx_size = tx_size_buf;
