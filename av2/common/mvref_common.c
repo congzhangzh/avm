@@ -3259,6 +3259,14 @@ static INLINE void check_traj_intersect(AV2_COMMON *cm,
   }
 }
 
+// The inter references that the entries of a start frame visited by a
+// projection store on each side: bit rf for rf < INTER_REFS_PER_FRAME, bit
+// INTER_REFS_PER_FRAME for any other inter value.
+typedef struct {
+  int known[2];
+  unsigned int refs[2];
+} MotionFieldRefsSeen;
+
 // Calculate the projected motion field from the TMVP mvs that points from
 // start_frame to one side.
 #ifdef __GNUC__
@@ -3269,7 +3277,8 @@ __attribute__((noinline))
 static int
 motion_field_projection_side(AV2_COMMON *cm, MV_REFERENCE_FRAME start_frame,
                              MV_REFERENCE_FRAME target_frame, int side_idx,
-                             int row_start, int row_end) {
+                             int row_start, int row_end,
+                             MotionFieldRefsSeen *seen, int note_other_side) {
   int ref_offset[INTER_REFS_PER_FRAME] = { 0 };
 
   const RefCntBuffer *const start_frame_buf =
@@ -3348,6 +3357,17 @@ motion_field_projection_side(AV2_COMMON *cm, MV_REFERENCE_FRAME start_frame,
                           !(side_idx == 0 && ref_offset[rf] < 0) &&
                           !(side_idx == 1 && ref_offset[rf] > 0);
   }
+  // A projection of this start frame to the other side over the same rows
+  // has noted what the entries store on this side: if none of it can
+  // project, no block below writes anything.
+  if (!enable_mv_traj && seen->known[side_idx]) {
+    unsigned int can_write = seen->refs[side_idx] >> INTER_REFS_PER_FRAME;
+    for (int rf = 0; rf < INTER_REFS_PER_FRAME; rf++) {
+      can_write |= ((seen->refs[side_idx] >> rf) & 1) & ref_projectable[rf];
+    }
+    if (!can_write) return 1;
+  }
+  unsigned int other_refs = 0;
 
   // Neighbouring blocks mostly store the same motion vector. Its uncompressed
   // value and its projection depend only on the stored vector and ref_frame,
@@ -3364,6 +3384,14 @@ motion_field_projection_side(AV2_COMMON *cm, MV_REFERENCE_FRAME start_frame,
     for (int blk_col = 0; blk_col < start_mvs_cols;
          blk_col += cm->tmvp_sample_step) {
       MV_REF *mv_ref = &mv_ref_base[blk_row * start_mvs_cols + blk_col];
+      if (note_other_side) {
+        const MV_REFERENCE_FRAME other = mv_ref->ref_frame[!side_idx];
+        if (is_inter_ref_frame(other)) {
+          other_refs |= 1u << ((unsigned int)other < INTER_REFS_PER_FRAME
+                                   ? other
+                                   : INTER_REFS_PER_FRAME);
+        }
+      }
       const MV_REFERENCE_FRAME ref_frame = mv_ref->ref_frame[side_idx];
       if (is_inter_ref_frame(ref_frame)) {
         if (!enable_mv_traj && !ref_projectable[ref_frame]) continue;
@@ -3485,6 +3513,10 @@ motion_field_projection_side(AV2_COMMON *cm, MV_REFERENCE_FRAME start_frame,
         }
       }
     }
+  }
+  if (note_other_side) {
+    seen->known[!side_idx] = 1;
+    seen->refs[!side_idx] = other_refs;
   }
   return 1;
 }
@@ -4120,10 +4152,25 @@ int av2_motion_field_band_rows(const AV2_COMMON *cm) {
 
 void av2_project_motion_field_rows(AV2_COMMON *cm, const MotionFieldPlan *plan,
                                    int row_start, int row_end) {
+  // Projections only read the start frames' entries, so what the first
+  // projection of a start frame notes about the other side stays true for a
+  // later projection of it to that side over these rows.
+  MotionFieldRefsSeen seen[INTER_REFS_PER_FRAME];
+  memset(seen, 0, sizeof(seen));
   for (int pi = 0; pi < plan->count; pi++) {
-    motion_field_projection_side(cm, plan->ref[pi].start_frame,
-                                 plan->ref[pi].target_frame, plan->ref[pi].side,
-                                 row_start, row_end);
+    const int start_frame = plan->ref[pi].start_frame;
+    const int side = plan->ref[pi].side;
+    assert(start_frame >= 0 && start_frame < INTER_REFS_PER_FRAME);
+    int note_other_side = 0;
+    if (!cm->seq_params.enable_mv_traj && !seen[start_frame].known[!side]) {
+      for (int pj = pi + 1; pj < plan->count; pj++) {
+        note_other_side |= plan->ref[pj].start_frame == start_frame &&
+                           plan->ref[pj].side != side;
+      }
+    }
+    motion_field_projection_side(cm, start_frame, plan->ref[pi].target_frame,
+                                 side, row_start, row_end, &seen[start_frame],
+                                 note_other_side);
   }
 }
 
