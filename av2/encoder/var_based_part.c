@@ -593,14 +593,21 @@ static void fill_variance_tree_leaves(MACROBLOCK *x, VP128x128 *vt,
 // variances below are those of the zero-motion residual, so any content that
 // moves (a scrolling page above all) splits into the smallest blocks.
 
-// Column sums of a width x height area, scaled to [0, 2 * 255].
+#define INT_PRO_MAX_LEN (MAX_SB_SIZE + 2 * 512)
+
+// Column sums of a width x height area, scaled to [0, 2 * 255]. Summed row by
+// row, so the reads go along memory and the loop vectorizes; the sums are the
+// same as column by column.
 static void int_pro_row(int16_t *hbuf, const uint16_t *ref, int ref_stride,
                         int width, int height, int norm) {
-  for (int i = 0; i < width; ++i) {
-    int sum = 0;
-    for (int j = 0; j < height; ++j) sum += ref[j * ref_stride + i];
-    hbuf[i] = (int16_t)(sum >> norm);
+  int sum[INT_PRO_MAX_LEN];
+  assert(width <= INT_PRO_MAX_LEN);
+  for (int i = 0; i < width; ++i) sum[i] = ref[i];
+  for (int j = 1; j < height; ++j) {
+    ref += ref_stride;
+    for (int i = 0; i < width; ++i) sum[i] += ref[i];
   }
+  for (int i = 0; i < width; ++i) hbuf[i] = (int16_t)(sum[i] >> norm);
 }
 
 // Row sums of a width x height area, scaled to [0, 255].
@@ -615,16 +622,20 @@ static void int_pro_col(int16_t *vbuf, const uint16_t *ref, int ref_stride,
 }
 
 // Variance of the difference of two length-n vectors (n a power of two).
+// The entries are below 512, so a squared difference is below 2^18 and n of
+// them (n <= MAX_SB_SIZE) fit an int: the sums stay in 32-bit lanes and
+// vectorize.
 static int vector_var(const int16_t *ref, const int16_t *src, int n,
                       int log2_n) {
+  assert(n <= MAX_SB_SIZE);
   int mean = 0;
-  int64_t sse = 0;
+  int sse = 0;
   for (int i = 0; i < n; ++i) {
     const int diff = ref[i] - src[i];
     mean += diff;
     sse += diff * diff;
   }
-  return (int)(sse - (((int64_t)mean * mean) >> log2_n));
+  return (int)((int64_t)sse - (((int64_t)mean * mean) >> log2_n));
 }
 
 // Best offset of src within ref, ref holding range_lo + n + range_hi
@@ -691,7 +702,7 @@ static unsigned int sb_motion_estimate(AV2_COMP *cpi, MACROBLOCK *x,
   const int log2_bh = mi_size_high_log2[bsize] + MI_SIZE_LOG2;
   const int row_norm = log2_bh - 1 + bd_shift;
   const int col_norm = log2_bw + bd_shift;
-  int16_t hbuf[MAX_SB_SIZE + 2 * 512], vbuf[MAX_SB_SIZE + 2 * 512];
+  int16_t hbuf[INT_PRO_MAX_LEN], vbuf[INT_PRO_MAX_LEN];
   int16_t src_hbuf[MAX_SB_SIZE], src_vbuf[MAX_SB_SIZE];
   const uint16_t *const src = x->plane[AVM_PLANE_Y].src.buf;
   const int src_stride = x->plane[AVM_PLANE_Y].src.stride;
