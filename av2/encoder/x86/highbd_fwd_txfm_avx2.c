@@ -19,6 +19,7 @@
 #include "avm_ports/mem.h"
 #include "avm_dsp/x86/txfm_common_sse2.h"
 #include "av2/common/txb_common.h"
+#include "av2/encoder/x86/highbd_fwd_txfm_avx2.h"
 
 static INLINE __m256i round_power_of_two_signed_avx2(__m256i v_val_d,
                                                      int bits) {
