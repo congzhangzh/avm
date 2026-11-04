@@ -581,6 +581,53 @@ static INLINE void transpose_filt_generic_asym_highbd_ver_4px_sse4_1(
 }
 #endif  // USE_TRANSPOSE_VERT
 
+// The filter length decision of filt_choice_highbd(), taken from the averaged
+// second derivatives and end-direction differences of rows/columns 0 and 3.
+// In the C code `mask` is always 0 when a stage starts (any condition of an
+// earlier stage has already returned), so a stage fails exactly when one of
+// its own conditions holds. `a > t || b > t` is tested as `max(a, b) > t`; a
+// value whose condition is switched off by max_samples_neg is replaced by 0,
+// which never exceeds a threshold (all thresholds are >= 0).
+//
+// Stages 1 to 3. res = { sd[-2], sd[-1], sd[0], sd[1], diff_neg[3],
+// diff_pos[3], ... }. Returns the filter length when the search ends here, or
+// -1 when it goes on to 4 samples and above.
+static INLINE int filt_choice_stages_1_to_3(const uint16_t *res,
+                                            int max_samples_neg,
+                                            int max_samples_pos, int q_thresh,
+                                            int side_thresh) {
+  const int sd_side = AVMMAX(res[0], res[3]);
+  const int sd_mid = res[1] + res[2];
+
+  // 1 sample modification
+  if (sd_side > side_thresh) return 0;
+  if (max_samples_pos == 1) return 1;
+
+  // 2 sample modification
+  if ((sd_side > (side_thresh >> 2)) | (sd_mid > q_thresh * DF_6_THRESH))
+    return 1;
+
+  // 3 sample modification
+  const int diff3 = AVMMAX(max_samples_neg > 2 ? res[4] : 0, res[5]);
+  if ((sd_side > (side_thresh >> FILT_8_THRESH_SHIFT)) |
+      (sd_mid > q_thresh * DF_8_THRESH) | (diff3 > ((side_thresh * 3) >> 4)))
+    return 2;
+  if (max_samples_pos == 3) return 3;
+  return -1;
+}
+
+// One stage at 4 samples and above (dist = 4, 6 or 8; the end-direction
+// differences are taken at dist, except at 8 where they are taken at 7).
+// Returns nonzero when the stage fails.
+static INLINE int filt_choice_stage_fails(int transition, int q_mult, int dist,
+                                          int use_neg, int diff_neg,
+                                          int diff_pos, int q_thresh,
+                                          int side_thresh) {
+  const int diff = AVMMAX(use_neg ? diff_neg : 0, diff_pos);
+  return (transition > q_thresh * q_mult) |
+         (diff > ((side_thresh * dist) >> 4));
+}
+
 #define CALC_FILT_CHOICE_MASK_HORZ(xmm_neg, xmm_pos,                    \
                                    xmm_row_m1p0_sub_m2p1_mult, xmm_out) \
   {                                                                     \
@@ -604,8 +651,6 @@ static INLINE int filt_choice_highbd_horizontal_px4_sse4_1(
          max_samples_pos == 6 || max_samples_pos == 8);
 
   if (max_samples_pos < 1 || max_samples_pos < max_samples_neg) return 0;
-
-  int8_t mask = 0;
 
   __m128i xmm_sample_mask = _mm_set_epi16(-1, 0, 0, -1, -1, 0, 0, -1);
 
@@ -692,61 +737,18 @@ static INLINE int filt_choice_highbd_horizontal_px4_sse4_1(
   DECLARE_ALIGNED(16, uint16_t, res_arr[8]);
   _mm_store_si128((__m128i *)res_arr, xmm_results);
 
-  // Testing for 1 sample modification
+  const int filter = filt_choice_stages_1_to_3(
+      res_arr, max_samples_neg, max_samples_pos, q_thresh, side_thresh);
+  if (filter >= 0) return filter;
+
+  // 4 sample modification and above
   //-----------------------------------------------
-  mask |= (res_arr[0] > side_thresh) * -1;
-  mask |= (res_arr[3] > side_thresh) * -1;
+  const int transition = (res_arr[1] + res_arr[2]) << DF_Q_THRESH_SHIFT;
 
-  if (mask) return 0;
-
-  if (max_samples_pos == 1) return 1;
-
-  // Testing for 2 sample modification
-  //-----------------------------------------------
-  const int side_thresh2 = side_thresh >> 2;
-
-  mask |= (res_arr[0] > side_thresh2) * -1;
-  mask |= (res_arr[3] > side_thresh2) * -1;
-
-  mask |= ((res_arr[1] + res_arr[2]) > q_thresh * DF_6_THRESH) * -1;
-
-  if (mask) return 1;
-
-  // Testing 3 sample modification
-  //-----------------------------------------------
-  const int side_thresh3 = side_thresh >> FILT_8_THRESH_SHIFT;
-
-  mask |= (res_arr[0] > side_thresh3) * -1;
-  mask |= (res_arr[3] > side_thresh3) * -1;
-
-  mask |= ((res_arr[1] + res_arr[2]) > q_thresh * DF_8_THRESH) * -1;
-
-  int end_dir_thresh = (side_thresh * 3) >> 4;
-
-  if (max_samples_neg > 2) mask |= (res_arr[4] > end_dir_thresh) * -1;
-  mask |= (res_arr[5] > end_dir_thresh) * -1;
-
-  if (mask) return 2;
-
-  if (max_samples_pos == 3) return 3;
-
-  // Testing 4 sample modification and above
-  //-----------------------------------------------
-  int transition = (res_arr[1] + res_arr[2]) << DF_Q_THRESH_SHIFT;
-
-  // 4 sample modification
-  {
-    const int q_thresh4 = q_thresh * q_first[0];
-    mask |= (transition > q_thresh4) * -1;
-
-    end_dir_thresh = (side_thresh * 4) >> 4;
-
-    if (max_samples_neg >= 4) mask |= (res_arr[6] > end_dir_thresh) * -1;
-    mask |= (res_arr[7] > end_dir_thresh) * -1;
-
-    if (mask) return 3;
-    if (max_samples_pos <= 4) return 4;
-  }
+  if (filt_choice_stage_fails(transition, q_first[0], 4, max_samples_neg >= 4,
+                              res_arr[6], res_arr[7], q_thresh, side_thresh))
+    return 3;
+  if (max_samples_pos <= 4) return 4;
 
   // Calculate diffs at 6 and 7
   __m128i xmm_row_m7 = _mm_loadl_epi64((__m128i *)&s[-7 * stride]);
@@ -789,34 +791,16 @@ static INLINE int filt_choice_highbd_horizontal_px4_sse4_1(
   _mm_storel_epi64((__m128i *)res_arr, xmm_diffs_67);
 
   // 6 sample modification
-  {
-    const int q_thresh4 = q_thresh * q_first[2];
-    mask |= (transition > q_thresh4) * -1;
-
-    end_dir_thresh = (side_thresh * 6) >> 4;
-
-    if (max_samples_neg >= 6) mask |= (res_arr[0] > end_dir_thresh) * -1;
-    mask |= (res_arr[1] > end_dir_thresh) * -1;
-
-    if (mask) return 4;
-    if (max_samples_pos <= 6) return 6;
-  }
+  if (filt_choice_stage_fails(transition, q_first[2], 6, max_samples_neg >= 6,
+                              res_arr[0], res_arr[1], q_thresh, side_thresh))
+    return 4;
+  if (max_samples_pos <= 6) return 6;
 
   // 8 sample modification (using diff_7 so it doesn't go out of 8 pixels)
-  {
-    const int q_thresh4 = q_thresh * q_first[4];
-    mask |= (transition > q_thresh4) * -1;
-
-    end_dir_thresh = (side_thresh * 8) >> 4;
-
-    if (max_samples_neg >= 7) mask |= (res_arr[2] > end_dir_thresh) * -1;
-    mask |= (res_arr[3] > end_dir_thresh) * -1;
-
-    if (mask) return 6;
-    if (max_samples_pos <= 8) return 8;
-  }
-
-  return MAX_DBL_FLT_LEN;
+  if (filt_choice_stage_fails(transition, q_first[4], 8, max_samples_neg >= 7,
+                              res_arr[2], res_arr[3], q_thresh, side_thresh))
+    return 6;
+  return 8;
 }
 
 static const uint8_t shuffle_mask1[16] = { 0, 1, 6, 7, 12, 13, 14, 15,
@@ -849,8 +833,6 @@ static INLINE int filt_choice_highbd_vertical_px4_sse4_1(uint16_t *s, int pitch,
          max_samples_pos == 6 || max_samples_pos == 8);
 
   if (max_samples_pos < 1 || max_samples_pos < max_samples_neg) return 0;
-
-  int8_t mask = 0;
 
   __m128i xmm_row0_m4_to_p3 = _mm_loadu_si128((__m128i *)(s - 4));
   __m128i xmm_row3_m4_to_p3 = _mm_loadu_si128((__m128i *)(s + 3 * stride - 4));
@@ -906,47 +888,13 @@ static INLINE int filt_choice_highbd_vertical_px4_sse4_1(uint16_t *s, int pitch,
   DECLARE_ALIGNED(16, uint16_t, res_arr[8]);
   _mm_store_si128((__m128i *)res_arr, xmm_row03_res);
 
-  // Testing for 1 sample modification
+  const int filter = filt_choice_stages_1_to_3(
+      res_arr, max_samples_neg, max_samples_pos, q_thresh, side_thresh);
+  if (filter >= 0) return filter;
+
+  // 4 sample modification and above
   //-----------------------------------------------
-  mask |= (res_arr[0] > side_thresh) * -1;
-  mask |= (res_arr[3] > side_thresh) * -1;
-
-  if (mask) return 0;
-
-  if (max_samples_pos == 1) return 1;
-
-  // Testing for 2 sample modification
-  //-----------------------------------------------
-  const int side_thresh2 = side_thresh >> 2;
-
-  mask |= (res_arr[0] > side_thresh2) * -1;
-  mask |= (res_arr[3] > side_thresh2) * -1;
-
-  mask |= ((res_arr[1] + res_arr[2]) > q_thresh * DF_6_THRESH) * -1;
-
-  if (mask) return 1;
-
-  // Testing 3 sample modification
-  //-----------------------------------------------
-  const int side_thresh3 = side_thresh >> FILT_8_THRESH_SHIFT;
-
-  mask |= (res_arr[0] > side_thresh3) * -1;
-  mask |= (res_arr[3] > side_thresh3) * -1;
-
-  mask |= ((res_arr[1] + res_arr[2]) > q_thresh * DF_8_THRESH) * -1;
-
-  int end_dir_thresh = (side_thresh * 3) >> 4;
-
-  if (max_samples_neg > 2) mask |= (res_arr[4] > end_dir_thresh) * -1;
-  mask |= (res_arr[5] > end_dir_thresh) * -1;
-
-  if (mask) return 2;
-
-  if (max_samples_pos == 3) return 3;
-
-  // Testing 4 sample modification and above
-  //-----------------------------------------------
-  int transition = (res_arr[1] + res_arr[2]) << DF_Q_THRESH_SHIFT;
+  const int transition = (res_arr[1] + res_arr[2]) << DF_Q_THRESH_SHIFT;
 
   __m128i xmm_row0_p0_to_p7 = _mm_loadu_si128((__m128i *)(s));
   __m128i xmm_row3_p0_to_p7 = _mm_loadu_si128((__m128i *)(s + 3 * stride));
@@ -1017,48 +965,22 @@ static INLINE int filt_choice_highbd_vertical_px4_sse4_1(uint16_t *s, int pitch,
   _mm_store_si128((__m128i *)res_arr, xmm_diff467);
 
   // 4 sample modification
-  {
-    const int q_thresh4 = q_thresh * q_first[0];
-    mask |= (transition > q_thresh4) * -1;
-
-    end_dir_thresh = (side_thresh * 4) >> 4;
-
-    if (max_samples_neg >= 4) mask |= (res_arr[0] > end_dir_thresh) * -1;
-    mask |= (res_arr[1] > end_dir_thresh) * -1;
-
-    if (mask) return 3;
-    if (max_samples_pos <= 4) return 4;
-  }
+  if (filt_choice_stage_fails(transition, q_first[0], 4, max_samples_neg >= 4,
+                              res_arr[0], res_arr[1], q_thresh, side_thresh))
+    return 3;
+  if (max_samples_pos <= 4) return 4;
 
   // 6 sample modification
-  {
-    const int q_thresh4 = q_thresh * q_first[2];
-    mask |= (transition > q_thresh4) * -1;
-
-    end_dir_thresh = (side_thresh * 6) >> 4;
-
-    if (max_samples_neg >= 6) mask |= (res_arr[2] > end_dir_thresh) * -1;
-    mask |= (res_arr[3] > end_dir_thresh) * -1;
-
-    if (mask) return 4;
-    if (max_samples_pos <= 6) return 6;
-  }
+  if (filt_choice_stage_fails(transition, q_first[2], 6, max_samples_neg >= 6,
+                              res_arr[2], res_arr[3], q_thresh, side_thresh))
+    return 4;
+  if (max_samples_pos <= 6) return 6;
 
   // 8 sample modification (using diff_7 so it doesn't go out of 8 pixels)
-  {
-    const int q_thresh4 = q_thresh * q_first[4];
-    mask |= (transition > q_thresh4) * -1;
-
-    end_dir_thresh = (side_thresh * 8) >> 4;
-
-    if (max_samples_neg >= 7) mask |= (res_arr[4] > end_dir_thresh) * -1;
-    mask |= (res_arr[5] > end_dir_thresh) * -1;
-
-    if (mask) return 6;
-    if (max_samples_pos <= 8) return 8;
-  }
-
-  return MAX_DBL_FLT_LEN;
+  if (filt_choice_stage_fails(transition, q_first[4], 8, max_samples_neg >= 7,
+                              res_arr[4], res_arr[5], q_thresh, side_thresh))
+    return 6;
+  return 8;
 }
 
 void avm_highbd_lpf_horizontal_generic_sse4_1(
