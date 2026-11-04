@@ -293,10 +293,21 @@ void av2_copy_frame_mvs_tip_frame_mode(const AV2_COMMON *const cm,
   }
 
   const int is_tip_16_16 = is_tip_coded_as_16x16_block(cm, mi);
+  // Only the wedge decisions, the warp models and the TIP motion field depend
+  // on the position in the block: without them every entry gets the value of
+  // the first one, which is copied instead of computed again.
+  const int same_for_all = !is_wedge && !is_warp[0] && !is_warp[1] &&
+                           !is_tip_ref_frame(mi->ref_frame[0]) &&
+                           !is_tip_ref_frame(mi->ref_frame[1]);
+  const MV_REF *const first = frame_mvs;
 
   for (int h = 0; h < y_inside_boundary; h++) {
     MV_REF *mv = frame_mvs;
     for (int w = 0; w < x_inside_boundary; w++) {
+      if (same_for_all && (h | w)) {
+        *mv++ = *first;
+        continue;
+      }
       for (int idx = 0; idx < 2; ++idx) {
         mv->ref_frame[idx] = NONE_FRAME;
         mv->mv[idx].as_int = 0;
@@ -580,10 +591,19 @@ void av2_copy_frame_mvs(const AV2_COMMON *const cm, const MACROBLOCKD *const xd,
   for (int idx = 0; idx < 2; idx++) {
     is_warp[idx] = is_warp_affine_block(xd, mi, idx, &warp_params[idx]);
   }
+  // Only the wedge decisions and the warp models depend on the position in
+  // the block: without them every entry gets the value of the first one,
+  // which is copied instead of computed again.
+  const int same_for_all = !is_wedge && !is_warp[0] && !is_warp[1];
+  const MV_REF *const first = frame_mvs;
 
   for (h = 0; h < y_inside_boundary; h++) {
     MV_REF *mv = frame_mvs;
     for (w = 0; w < x_inside_boundary; w++) {
+      if (same_for_all && (h | w)) {
+        *mv++ = *first;
+        continue;
+      }
       mv->ref_frame[0] = NONE_FRAME;
       mv->ref_frame[1] = NONE_FRAME;
       mv->mv[0].as_int = 0;
