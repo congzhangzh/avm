@@ -431,6 +431,9 @@ list(
   "${AVM_ROOT}/av2/encoder/x86/rdopt_avx2.c"
   "${AVM_ROOT}/av2/encoder/x86/pickrst_avx2.c")
 
+list(APPEND AVM_AV2_ENCODER_INTRIN_AVX512
+     "${AVM_ROOT}/av2/encoder/x86/highbd_fwd_txfm_avx512.c")
+
 list(
   APPEND
   AVM_AV2_ENCODER_INTRIN_NEON
@@ -588,6 +591,14 @@ function(setup_av2_targets)
     if(CONFIG_AV2_ENCODER)
       add_intrinsics_object_library("-mavx2" "avx2" "avm_av2_encoder"
                                     "AVM_AV2_ENCODER_INTRIN_AVX2")
+    endif()
+  endif()
+
+  if(HAVE_AVX512)
+    if(CONFIG_AV2_ENCODER)
+      add_intrinsics_object_library("${AVM_AVX512_FLAGS}" "avx512"
+                                    "avm_av2_encoder"
+                                    "AVM_AV2_ENCODER_INTRIN_AVX512")
     endif()
   endif()
 

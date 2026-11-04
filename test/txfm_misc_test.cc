@@ -456,4 +456,176 @@ TEST(FwdTxfmVariantExtreme, MaxResidualNonSquare) {
   }
 }
 
+// -- fwd_txfm (C vs one SIMD version, every size including 64) --
+//
+// FwdTxfmVariantTest checks the RTCD fwd_txfm, and no 64-length size. This
+// one names the version, so that each of AVX2 and AVX-512 is checked on the
+// machine, and covers the 64-length sizes too. Of those, only the first
+// 32x32 coefficients are kept (the rest is zeroed by the encoder), and only
+// those are compared: the versions leave different values after them.
+
+typedef void (*FwdTxfmFunc)(const int16_t *, tran_low_t *, int, TxfmParam *);
+typedef std::tuple<FwdTxfmFunc, TX_SIZE> FwdTxfmFuncParam;
+
+class FwdTxfmFuncTest : public ::testing::TestWithParam<FwdTxfmFuncParam> {
+ protected:
+  void TearDown() override { libavm_test::ClearSystemState(); }
+
+  // Runs C and the tested version on input (txw x txh at the given stride)
+  // and compares the kept coefficients.
+  void RunCheck(const int16_t *input, int stride, TX_TYPE tx_type, int bd,
+                int use_ddt, const char *label) {
+    const TX_SIZE tx_size = std::get<1>(GetParam());
+    const FwdTxfmFunc tst = std::get<0>(GetParam());
+    const int kept =
+        AVMMIN(tx_size_wide[tx_size], 32) * AVMMIN(tx_size_high[tx_size], 32);
+    DECLARE_ALIGNED(32, tran_low_t, ref_coeff[64 * 64]);
+    DECLARE_ALIGNED(32, tran_low_t, tst_coeff[64 * 64]);
+    memset(ref_coeff, 0, sizeof(ref_coeff));
+    memset(tst_coeff, 0, sizeof(tst_coeff));
+
+    TxfmParam txfm_param;
+    memset(&txfm_param, 0, sizeof(txfm_param));
+    txfm_param.tx_size = tx_size;
+    txfm_param.tx_type = tx_type;
+    txfm_param.bd = bd;
+    txfm_param.use_ddt = use_ddt;
+
+    fwd_txfm_c(input, ref_coeff, stride, &txfm_param);
+    ASM_REGISTER_STATE_CHECK(tst(input, tst_coeff, stride, &txfm_param));
+
+    for (int k = 0; k < kept; k++) {
+      ASSERT_EQ(ref_coeff[k], tst_coeff[k])
+          << label << " mismatch at " << k << " tx_size=" << tx_size
+          << " tx_type=" << tx_type << " bd=" << bd << " use_ddt=" << use_ddt;
+    }
+  }
+
+  // Every valid tx_type, bit depth and use_ddt on inputs from fill(), which
+  // sets input (64 x 64 at stride 72) for a bit depth and a run index.
+  template <typename Fill>
+  void RunAll(int runs, Fill fill, const char *label) {
+    const TX_SIZE tx_size = std::get<1>(GetParam());
+    const TX_TYPE types[] = {
+      DCT_DCT,      ADST_DCT,          DCT_ADST, ADST_ADST, FLIPADST_DCT,
+      DCT_FLIPADST, FLIPADST_FLIPADST, IDTX,     V_DCT,     H_DCT
+    };
+    const int bds[] = { 8, 10, 12 };
+    DECLARE_ALIGNED(32, int16_t, input[72 * 64]);
+    for (int use_ddt = 0; use_ddt <= 1; use_ddt++) {
+      for (int bd : bds) {
+        for (TX_TYPE ty : types) {
+          if (!is_valid_fwd_txfm_combo(tx_size, ty)) continue;
+          // A 64-point pass is a DCT only.
+          if (ty == IDTX &&
+              (tx_size_wide[tx_size] == 64 || tx_size_high[tx_size] == 64)) {
+            continue;
+          }
+          for (int run = 0; run < runs; run++) {
+            fill(input, bd, run);
+            RunCheck(input, 72, ty, bd, use_ddt, label);
+            if (HasFatalFailure()) return;
+          }
+        }
+      }
+    }
+  }
+};
+GTEST_ALLOW_UNINSTANTIATED_PARAMETERIZED_TEST(FwdTxfmFuncTest);
+
+TEST_P(FwdTxfmFuncTest, RandomBitExact) {
+  ACMRandom rng(ACMRandom::DeterministicSeed());
+  RunAll(
+      20,
+      [&](int16_t *input, int bd, int) {
+        const int max_resi = (1 << bd) - 1;
+        for (int k = 0; k < 72 * 64; k++) {
+          input[k] = (int16_t)((int32_t)(rng.Rand31() % (2 * max_resi + 1)) -
+                               max_resi);
+        }
+      },
+      "random");
+}
+
+TEST_P(FwdTxfmFuncTest, ExtremesBitExact) {
+  // All +max, all -max, a checkerboard, alternating rows and columns of +-max
+  // and +-max at random: the sums of the 64-point passes reach their largest
+  // magnitudes.
+  ACMRandom rng(ACMRandom::DeterministicSeed());
+  RunAll(
+      6,
+      [&](int16_t *input, int bd, int run) {
+        const int m = (1 << bd) - 1;
+        for (int y = 0; y < 64; y++) {
+          for (int x = 0; x < 72; x++) {
+            int v;
+            switch (run) {
+              case 0: v = m; break;
+              case 1: v = -m; break;
+              case 2: v = ((x ^ y) & 1) ? m : -m; break;
+              case 3: v = (y & 1) ? m : -m; break;
+              case 4: v = (x & 1) ? m : -m; break;
+              default: v = (rng.Rand8() & 1) ? m : -m; break;
+            }
+            input[y * 72 + x] = (int16_t)v;
+          }
+        }
+      },
+      "extreme");
+}
+
+TEST_P(FwdTxfmFuncTest, DISABLED_Speed) {
+  const TX_SIZE tx_size = std::get<1>(GetParam());
+  const FwdTxfmFunc tst = std::get<0>(GetParam());
+  const int kRuns =
+      200000 / (tx_size_wide[tx_size] * tx_size_high[tx_size] / 64);
+  ACMRandom rng(ACMRandom::DeterministicSeed());
+  DECLARE_ALIGNED(32, int16_t, input[64 * 64]);
+  DECLARE_ALIGNED(32, tran_low_t, coeff[64 * 64]);
+  for (int k = 0; k < 64 * 64; k++) {
+    input[k] = (int16_t)((int32_t)(rng.Rand31() % 2047) - 1023);
+  }
+  TxfmParam txfm_param;
+  memset(&txfm_param, 0, sizeof(txfm_param));
+  txfm_param.tx_size = tx_size;
+  txfm_param.tx_type = DCT_DCT;
+  txfm_param.bd = 10;
+
+  avm_usec_timer timer;
+  avm_usec_timer_start(&timer);
+  for (int i = 0; i < kRuns; i++) {
+    tst(input, coeff, tx_size_wide[tx_size], &txfm_param);
+  }
+  avm_usec_timer_mark(&timer);
+  const double us = static_cast<double>(avm_usec_timer_elapsed(&timer));
+  printf("fwd_txfm %2dx%-2d: %8.1f ns/call (%d calls)\n", tx_size_wide[tx_size],
+         tx_size_high[tx_size], us * 1000.0 / kRuns, kRuns);
+}
+
+const TX_SIZE kFwdTxfmFuncSizes[] = {
+  TX_4X4,  TX_8X8,  TX_16X16, TX_32X32, TX_64X64, TX_4X8,   TX_8X4,
+  TX_8X16, TX_16X8, TX_16X32, TX_32X16, TX_32X64, TX_64X32, TX_4X16,
+  TX_16X4, TX_8X32, TX_32X8,  TX_16X64, TX_64X16, TX_4X32,  TX_32X4,
+  TX_8X64, TX_64X8, TX_4X64,  TX_64X4
+};
+
+INSTANTIATE_TEST_SUITE_P(
+    C, FwdTxfmFuncTest,
+    ::testing::Combine(::testing::Values(&fwd_txfm_c),
+                       ::testing::ValuesIn(kFwdTxfmFuncSizes)));
+
+#if HAVE_AVX2
+INSTANTIATE_TEST_SUITE_P(
+    AVX2, FwdTxfmFuncTest,
+    ::testing::Combine(::testing::Values(&fwd_txfm_avx2),
+                       ::testing::ValuesIn(kFwdTxfmFuncSizes)));
+#endif  // HAVE_AVX2
+
+#if HAVE_AVX512
+INSTANTIATE_TEST_SUITE_P(
+    AVX512, FwdTxfmFuncTest,
+    ::testing::Combine(::testing::Values(&fwd_txfm_avx512),
+                       ::testing::ValuesIn(kFwdTxfmFuncSizes)));
+#endif  // HAVE_AVX512
+
 }  // namespace
