@@ -3316,6 +3316,28 @@ motion_field_projection_side(AV2_COMMON *cm, MV_REFERENCE_FRAME start_frame,
       ROUND_POWER_OF_TWO(start_frame_buf->mi_cols, TMVP_SHIFT_BITS);
   (void)mvs_rows;
 
+  // Whether a block referencing ref_frame can write the motion field: the
+  // tests below that depend on ref_frame alone. Without trajectories such a
+  // block has nothing else to do, so it is skipped before its motion vector
+  // is read (a past start frame projected to side 1 skips every block).
+  const int enable_mv_traj = cm->seq_params.enable_mv_traj;
+  int ref_projectable[INTER_REFS_PER_FRAME];
+  for (int rf = 0; rf < INTER_REFS_PER_FRAME; rf++) {
+    ref_projectable[rf] = start_ref_map[rf] != start_frame &&
+                          ref_abs_offset[rf] <= MAX_FRAME_DISTANCE &&
+                          !(side_idx == 0 && ref_offset[rf] < 0) &&
+                          !(side_idx == 1 && ref_offset[rf] > 0);
+  }
+
+  // Neighbouring blocks mostly store the same motion vector. Its uncompressed
+  // value and its projection depend only on the stored vector and ref_frame,
+  // so they are reused from the last block that computed them.
+  MV_REFERENCE_FRAME last_ref_frame = NONE_FRAME;
+  int_mv last_stored_mv = { 0 };
+  MV last_ref_mv = { 0, 0 };
+  int last_proj_ready = 0;
+  MV last_proj_mv = { 0, 0 };
+
   assert(cm->tmvp_sample_step > 0);
   for (int blk_row = row_start; blk_row < AVMMIN(row_end, start_mvs_rows);
        blk_row += cm->tmvp_sample_step) {
@@ -3324,15 +3346,24 @@ motion_field_projection_side(AV2_COMMON *cm, MV_REFERENCE_FRAME start_frame,
       MV_REF *mv_ref = &mv_ref_base[blk_row * start_mvs_cols + blk_col];
       const MV_REFERENCE_FRAME ref_frame = mv_ref->ref_frame[side_idx];
       if (is_inter_ref_frame(ref_frame)) {
-        MV ref_mv = mv_ref->mv[side_idx].as_mv;
-        fetch_mv_from_tmvp(&ref_mv);
+        if (!enable_mv_traj && !ref_projectable[ref_frame]) continue;
+        const int_mv stored_mv = mv_ref->mv[side_idx];
+        if (ref_frame != last_ref_frame ||
+            stored_mv.as_int != last_stored_mv.as_int) {
+          last_ref_frame = ref_frame;
+          last_stored_mv = stored_mv;
+          last_ref_mv = stored_mv.as_mv;
+          fetch_mv_from_tmvp(&last_ref_mv);
+          last_proj_ready = 0;
+        }
+        MV ref_mv = last_ref_mv;
         int scaled_blk_col = blk_col;
         int scaled_blk_row = blk_row;
 
         MV_REFERENCE_FRAME end_frame = start_ref_map[ref_frame];
         if (end_frame == start_frame) continue;
 
-        if (cm->seq_params.enable_mv_traj) {
+        if (enable_mv_traj) {
           check_traj_intersect(cm, start_frame, end_frame, &ref_mv,
                                scaled_blk_row, scaled_blk_col, mvs_cols);
         }
@@ -3348,8 +3379,12 @@ motion_field_projection_side(AV2_COMMON *cm, MV_REFERENCE_FRAME start_frame,
           int mi_r = scaled_blk_row;
           int mi_c = scaled_blk_col;
           if (!(ref_mv.row == 0 && ref_mv.col == 0)) {
-            tip_get_mv_projection(&this_mv.as_mv, ref_mv,
-                                  temporal_scale_factor[ref_frame]);
+            if (!last_proj_ready) {
+              tip_get_mv_projection(&last_proj_mv, ref_mv,
+                                    temporal_scale_factor[ref_frame]);
+              last_proj_ready = 1;
+            }
+            this_mv.as_mv = last_proj_mv;
             pos_valid = get_block_position_no_constraint(
                 cm, &mi_r, &mi_c, scaled_blk_row, scaled_blk_col, this_mv.as_mv,
                 0);
