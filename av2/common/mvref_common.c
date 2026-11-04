@@ -4580,11 +4580,29 @@ void span_submv(const AV2_COMMON *cm, SUBMB_INFO **submi, int mi_row,
   const int x_inside_boundary = AVMMIN(bw, cm->mi_params.mi_cols - mi_col);
   const int y_inside_boundary = AVMMIN(bh, cm->mi_params.mi_rows - mi_row);
   const int stride = cm->mi_params.mi_stride;
+  // Read once: every store below writes this value, so one through a pointer
+  // that aliases submi[0] (several 4x4 units can share an entry) rewrites it
+  // with what it already holds.
+  const int_mv mv = submi[0]->mv[ref];
   for (int y = 0; y < y_inside_boundary; y++) {
-    for (int x = 0; x < x_inside_boundary; x++) {
-      if (x == 0 && y == 0) continue;
-      submi[y * stride + x]->mv[ref] = submi[0]->mv[ref];
-    }
+    SUBMB_INFO **const row = submi + y * stride;
+    for (int x = (y == 0); x < x_inside_boundary; x++) row[x]->mv[ref] = mv;
+  }
+}
+
+void span_submvs(const AV2_COMMON *cm, SUBMB_INFO **submi, int mi_row,
+                 int mi_col, BLOCK_SIZE bsize) {
+  const int bw = mi_size_wide[bsize];
+  const int bh = mi_size_high[bsize];
+  const int x_inside_boundary = AVMMIN(bw, cm->mi_params.mi_cols - mi_col);
+  const int y_inside_boundary = AVMMIN(bh, cm->mi_params.mi_rows - mi_row);
+  const int stride = cm->mi_params.mi_stride;
+  // Both motion vectors are all a SUBMB_INFO holds; as in span_submv(), a
+  // store through a pointer that aliases submi[0] rewrites what it holds.
+  const SUBMB_INFO info = *submi[0];
+  for (int y = 0; y < y_inside_boundary; y++) {
+    SUBMB_INFO **const row = submi + y * stride;
+    for (int x = (y == 0); x < x_inside_boundary; x++) *row[x] = info;
   }
 }
 

@@ -3054,10 +3054,8 @@ static void read_inter_frame_mode_info(AV2Decoder *const pbi,
   mbmi->mv[0].as_int = 0;
   mbmi->mv[1].as_int = 0;
   xd->submi[0]->mv[0].as_int = xd->submi[0]->mv[1].as_int = 0;
-  span_submv(cm, xd->submi, xd->mi_row, xd->mi_col, mbmi->sb_type[PLANE_TYPE_Y],
-             0);
-  span_submv(cm, xd->submi, xd->mi_row, xd->mi_col, mbmi->sb_type[PLANE_TYPE_Y],
-             1);
+  span_submvs(cm, xd->submi, xd->mi_row, xd->mi_col,
+              mbmi->sb_type[PLANE_TYPE_Y]);
   set_default_max_mv_precision(mbmi, xd->sbi->sb_mv_precision);
   set_mv_precision(mbmi, mbmi->max_mv_precision);  // initialize to max
   set_default_precision_set(cm, mbmi, mbmi->sb_type[PLANE_TYPE_Y]);

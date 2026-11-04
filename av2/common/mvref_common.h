@@ -1056,6 +1056,9 @@ void assign_warpmv(const AV2_COMMON *cm, SUBMB_INFO **submi, BLOCK_SIZE bsize,
 // span the first subblock info into all the rest subblocks in the same block
 void span_submv(const AV2_COMMON *cm, SUBMB_INFO **submi, int mi_row,
                 int mi_col, BLOCK_SIZE bsize, int ref);
+// span_submv() for both references, in one pass over the block
+void span_submvs(const AV2_COMMON *cm, SUBMB_INFO **submi, int mi_row,
+                 int mi_col, BLOCK_SIZE bsize);
 
 // Decide what the base warp model should be when using WARP_DELTA.
 // The warp model to use is signalled as a delta from this.
