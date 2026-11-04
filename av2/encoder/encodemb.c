@@ -386,13 +386,21 @@ void parity_hiding_trellis_off(const struct AV2_COMP *cpi, MACROBLOCK *mb,
   const SCAN_ORDER *const scan_order = get_scan(tx_size, tx_type);
   const int16_t *const scan = scan_order->scan;
 
-  int nz = 0, sum_abs1 = 0;
+  // Only the parity of sum(AVMMIN(abs(q), MAX_BASE_BR_RANGE)) over the AC
+  // levels is used, so accumulate that bit alone (the low bit of a sum is the
+  // XOR of the low bits). AVMMIN(abs(q), MAX_BASE_BR_RANGE) has the parity of q
+  // (abs keeps it) when abs(q) < MAX_BASE_BR_RANGE, and the parity of
+  // MAX_BASE_BR_RANGE otherwise. Written without short-circuit operators so
+  // the loop has no data-dependent branch: the AVMMIN compiled to one, which
+  // mispredicted on blocks mixing small and large levels.
+  int nz = 0, parity_abs1 = 0;
   for (int si = eob - 1; si > 0; si--) {
-    const int pos = scan[si];
-    nz += !!(qcoeff[pos]);
-    sum_abs1 += AVMMIN(abs(qcoeff[pos]), MAX_BASE_BR_RANGE);
+    const tran_low_t q = qcoeff[scan[si]];
+    const int small = abs(q) < MAX_BASE_BR_RANGE;
+    nz += (q != 0);
+    parity_abs1 ^= (q & small) | (MAX_BASE_BR_RANGE & 1 & !small);
   }
-  if (nz >= PHTHRESH && ((qcoeff[0] & 1) != (sum_abs1 & 1))) {
+  if (nz >= PHTHRESH && ((qcoeff[0] & 1) != parity_abs1)) {
     int tune_pos = scan[0];
     tran_low_t absdqcoeff = abs(dqcoeff[tune_pos]);
     tran_low_t abstcoeff = abs(tcoeff[tune_pos]);
@@ -411,17 +419,21 @@ void parity_hiding_trellis_off(const struct AV2_COMP *cpi, MACROBLOCK *mb,
       abstcoeff = abs(tcoeff[pos]);
       absdqcoeff = abs(dqcoeff[pos]);
       absqcoeff = abs(qcoeff[pos]);
-      bool tunable =
-          (absqcoeff < MAX_BASE_BR_RANGE) ||
-          ((absqcoeff == MAX_BASE_BR_RANGE) && (abstcoeff < absdqcoeff));
-      absqcoeff += ((abstcoeff < absdqcoeff) ? -1 : 1);
+      // Same predicate as (a < M) || (a == M && lower); bitwise operators keep
+      // it a flag computation instead of a branch on the level, which
+      // mispredicted. Neither side has side effects, so evaluating both
+      // changes nothing.
+      const int lower = abstcoeff < absdqcoeff;
+      const int tunable = (absqcoeff < MAX_BASE_BR_RANGE) |
+                          ((absqcoeff == MAX_BASE_BR_RANGE) & lower);
+      absqcoeff += (lower ? -1 : 1);
       absdqcoeff = (tran_low_t)(ROUND_POWER_OF_TWO_64(
                                     (tran_high_t)absqcoeff *
                                         get_dqv(dequant, pos, iqmatrix),
                                     QUANT_TABLE_BITS) >>
                                 shift);
       tran_low_t absdist = abs(abstcoeff - absdqcoeff);
-      if (absdist < dist_min && tunable) {
+      if (tunable & (absdist < dist_min)) {
         dist_min = absdist;
         tune_pos = pos;
         tune_absqcoeff = absqcoeff;
