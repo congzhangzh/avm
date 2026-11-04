@@ -63,10 +63,22 @@ void *avm_memalign(size_t align, size_t size) {
 
 void *avm_malloc(size_t size) { return avm_memalign(DEFAULT_ALIGNMENT, size); }
 
+// calloc() returns the same zeroed memory as malloc() + memset(), but skips
+// the clear where the system already zeroed the pages (a large block is a
+// fresh mmap), so those pages are not written before they are used.
 void *avm_calloc(size_t num, size_t size) {
-  const size_t total_size = num * size;
-  void *const x = avm_malloc(total_size);
-  if (x) memset(x, 0, total_size);
+  void *x = NULL;
+  const size_t aligned_size =
+      GetAlignedMallocSize(num * size, DEFAULT_ALIGNMENT);
+#if defined(AVM_MAX_ALLOCABLE_MEMORY)
+  if (!check_size_argument_overflow(1, aligned_size)) return NULL;
+#endif
+  void *const addr = calloc(1, aligned_size);
+  if (addr) {
+    x = avm_align_addr((unsigned char *)addr + ADDRESS_STORAGE_SIZE,
+                       DEFAULT_ALIGNMENT);
+    SetActualMallocAddress(x, addr);
+  }
   return x;
 }
 
