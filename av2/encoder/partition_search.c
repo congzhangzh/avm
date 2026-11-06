@@ -2476,11 +2476,14 @@ void av2_nonrd_use_partition(AV2_COMP *cpi, ThreadData *td,
                              PC_TREE *pc_tree, PARTITION_TREE *ptree_luma) {
   AV2_COMMON *const cm = &cpi->common;
   const CommonModeInfoParams *const mi_params = &cm->mi_params;
-  if (mi_row >= mi_params->mi_rows || mi_col >= mi_params->mi_cols) return;
-
   TileInfo *const tile_info = &tile_data->tile_info;
   MACROBLOCK *const x = &td->mb;
   MACROBLOCKD *const xd = &x->e_mbd;
+  if (mi_row >= mi_params->mi_rows || mi_col >= mi_params->mi_cols) {
+    av2_mark_block_as_pseudo_coded(xd, mi_row, mi_col, bsize, cm->sb_size);
+    return;
+  }
+
   const int ss_x = xd->plane[1].subsampling_x;
   const int ss_y = xd->plane[1].subsampling_y;
   assert(bsize < BLOCK_SIZES_ALL);
@@ -2589,6 +2592,9 @@ void av2_nonrd_use_partition(AV2_COMP *cpi, ThreadData *td,
             mi_row + hbh, mi_col, subsize, ptree ? ptree->sub_tree[1] : NULL,
             pc_tree->horizontal[cur_region_type][1],
             get_partition_subtree_const(ptree_luma, 1));
+      } else if (mi_row + hbh >= mi_params->mi_rows) {
+        av2_mark_block_as_pseudo_coded(xd, mi_row + hbh, mi_col, subsize,
+                                       cm->sb_size);
       }
       break;
     case PARTITION_VERT:
@@ -2608,6 +2614,9 @@ void av2_nonrd_use_partition(AV2_COMP *cpi, ThreadData *td,
                                 ptree ? ptree->sub_tree[1] : NULL,
                                 pc_tree->vertical[cur_region_type][1],
                                 get_partition_subtree_const(ptree_luma, 1));
+      } else if (mi_col + hbw >= mi_params->mi_cols) {
+        av2_mark_block_as_pseudo_coded(xd, mi_row, mi_col + hbw, subsize,
+                                       cm->sb_size);
       }
       break;
     case PARTITION_SPLIT:
@@ -2616,8 +2625,11 @@ void av2_nonrd_use_partition(AV2_COMP *cpi, ThreadData *td,
         int y_idx = (i >> 1) * hbh;
         int jj = i >> 1, ii = i & 0x01;
         if ((mi_row + y_idx >= mi_params->mi_rows) ||
-            (mi_col + x_idx >= mi_params->mi_cols))
+            (mi_col + x_idx >= mi_params->mi_cols)) {
+          av2_mark_block_as_pseudo_coded(xd, mi_row + y_idx, mi_col + x_idx,
+                                         subsize, cm->sb_size);
           continue;
+        }
         pc_tree->split[cur_region_type][i] = av2_alloc_pc_tree_node(
             xd->tree_type, mi_row + y_idx, mi_col + x_idx, cm->sb_size, subsize,
             pc_tree, PARTITION_SPLIT, i, i == 3, ss_x, ss_y);
