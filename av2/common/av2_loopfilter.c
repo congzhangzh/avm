@@ -830,6 +830,17 @@ static AVM_INLINE void prefetch_vert_lpf_stripe(const uint16_t *p, int stride,
 #endif
 }
 
+// Returns true if no entry of the per-edge "same parameters for N more units"
+// cache is set. A unit outside the frame is never filtered unless it is
+// served from this cache (set_lpf_parameters() returns before filling
+// anything for it), so once a whole stripe outside the frame starts with an
+// empty cache, it and every later stripe in that direction filter nothing.
+static AVM_INLINE int lpf_cache_is_empty(const int *mi_size_min, int n) {
+  int any = 0;
+  for (int i = 0; i < n; ++i) any |= mi_size_min[i];
+  return !any;
+}
+
 void av2_filter_block_plane_vert(AV2_COMMON *const cm,
                                  const MACROBLOCKD *const xd, const int plane,
                                  const MACROBLOCKD_PLANE *const plane_ptr,
@@ -862,7 +873,14 @@ void av2_filter_block_plane_vert(AV2_COMMON *const cm,
   TX_SIZE tx_size_buf[MAX_MIB_SIZE] = { 0 };
   int mi_size_min_height_buf[MAX_MIB_SIZE] = { 0 };
 
+  const uint32_t plane_width = plane_ptr->dst.width;
+  const uint32_t plane_height = plane_ptr->dst.height;
+
   for (int y = 0; y < y_range; y++) {
+    // Stripes below the frame: see lpf_cache_is_empty().
+    if (((mi_row * MI_SIZE) >> scale_vert) + y * MI_SIZE >= plane_height &&
+        lpf_cache_is_empty(mi_size_min_height_buf, x_range))
+      break;
     uint16_t *p = dst_ptr + y * MI_SIZE * dst_stride;
     uint32_t prev_x =
         (mi_col == 0) ? 0 : ((mi_col - 1) * MI_SIZE) >> scale_horz;
@@ -888,6 +906,10 @@ void av2_filter_block_plane_vert(AV2_COMMON *const cm,
       const uint32_t curr_y = ((mi_row * MI_SIZE) >> scale_vert) + y * MI_SIZE;
       uint32_t advance_units;
       TX_SIZE cur_tx_size = TX_4X4;
+
+      // Units right of the frame are never filtered: set_lpf_parameters()
+      // only fills the cache for units inside the frame, so theirs is empty.
+      if (curr_x >= plane_width) break;
 
       cur_tx_size = set_lpf_parameters(
           params, prev_x, curr_y, cm, xd, VERT_EDGE, curr_x, curr_y, plane,
@@ -980,7 +1002,14 @@ void av2_filter_block_plane_horz(AV2_COMMON *const cm,
   TX_SIZE tx_size_buf[MAX_MIB_SIZE] = { 0 };
   int mi_size_min_width_buf[MAX_MIB_SIZE] = { 0 };
 
+  const uint32_t plane_width = plane_ptr->dst.width;
+  const uint32_t plane_height = plane_ptr->dst.height;
+
   for (int x = 0; x < x_range; x++) {
+    // Columns right of the frame: see lpf_cache_is_empty().
+    if (((mi_col * MI_SIZE) >> scale_horz) + x * MI_SIZE >= plane_width &&
+        lpf_cache_is_empty(mi_size_min_width_buf, y_range))
+      break;
     uint16_t *p = dst_ptr + x * MI_SIZE;
     uint32_t prev_y =
         (mi_row == 0) ? 0 : ((mi_row - 1) * MI_SIZE) >> scale_vert;
@@ -998,6 +1027,10 @@ void av2_filter_block_plane_horz(AV2_COMMON *const cm,
       const uint32_t curr_y = ((mi_row * MI_SIZE) >> scale_vert) + y * MI_SIZE;
       uint32_t advance_units;
       TX_SIZE cur_tx_size = TX_4X4;
+
+      // Units below the frame are never filtered: set_lpf_parameters() only
+      // fills the cache for units inside the frame, so theirs is empty.
+      if (curr_y >= plane_height) break;
 
       cur_tx_size = set_lpf_parameters(
           params, curr_x, prev_y, cm, xd, HORZ_EDGE, curr_x, curr_y, plane,
