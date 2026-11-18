@@ -663,12 +663,13 @@ void av2_init_txk_skip_array(const AV2_COMMON *cm, int mi_row, int mi_col,
       blk_h = blk_h == 0 ? 1 : blk_h;
     }
 
+    // One memset() per row. tx_skip is a byte array, so stores through it
+    // could alias cm; a local pointer lets the compiler keep it in a register.
+    uint8_t *const tx_skip = cm->mi_params.tx_skip[plane];
     for (int r = 0; r < blk_h; r++) {
-      for (int c = 0; c < blk_w; c++) {
-        uint32_t idx = (row + r) * stride + col + c;
-        assert(idx < cm->mi_params.tx_skip_buf_size[plane]);
-        cm->mi_params.tx_skip[plane][idx] = value;
-      }
+      const uint32_t idx = (row + r) * stride + col;
+      assert(idx + blk_w <= cm->mi_params.tx_skip_buf_size[plane]);
+      memset(tx_skip + idx, value, blk_w);
     }
   }
 }
