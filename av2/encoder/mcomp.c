@@ -2698,8 +2698,12 @@ int av2_intrabc_hash_search(const AV2_COMP *cpi, const MACROBLOCKD *xd,
   // for the hashMap
   hash_table *ref_frame_hash = &intrabc_hash_info->intrabc_hash_table;
 
-  av2_get_block_hash_value(intrabc_hash_info, src, src_stride, block_width,
-                           &hash_value1, &hash_value2);
+  if (!av2_hash_get_frame_block_hash(ref_frame_hash, src, src_stride, x_pos,
+                                     y_pos, block_width, &hash_value1,
+                                     &hash_value2)) {
+    av2_get_block_hash_value(intrabc_hash_info, src, src_stride, block_width,
+                             &hash_value1, &hash_value2);
+  }
 
   int count = av2_hash_table_count(ref_frame_hash, hash_value1);
   if (count <= 1) {

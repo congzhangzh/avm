@@ -47,7 +47,32 @@ typedef struct _block_hash {
 typedef struct _hash_table {
   uint32_t *start[HASH_TABLE_NUM_SIZES];
   block_hash *entries[HASH_TABLE_NUM_SIZES];
+  // With CRC32C (a block's two hashes are one value), the table also keeps
+  // that value for the blocks of the two largest sizes it was built for at
+  // every position (y * frame_width + x) of the frame (frame_buf) it was built
+  // from, so that the search looks up a block of that frame instead of hashing
+  // it again. block_crc[s] is NULL when not kept; the table owns crc_buf.
+  const uint32_t *block_crc[HASH_TABLE_NUM_SIZES];
+  uint32_t *crc_buf[2];
+  const uint16_t *frame_buf;
+  int frame_stride;
+  int frame_width;
+  int frame_height;
 } hash_table;
+
+// The index of a block size (4, 8, ..., 256) in hash_table, -1 for others.
+static INLINE int av2_hash_block_size_index(int block_size) {
+  switch (block_size) {
+    case 4: return 0;
+    case 8: return 1;
+    case 16: return 2;
+    case 32: return 3;
+    case 64: return 4;
+    case 128: return 5;
+    case 256: return 6;
+    default: return -1;
+  }
+}
 
 struct intrabc_hash_info;
 
@@ -137,6 +162,15 @@ int av2_hash_is_horizontal_perfect(const YV12_BUFFER_CONFIG *picture,
 // block_size x block_size has the same color in all columns
 int av2_hash_is_vertical_perfect(const YV12_BUFFER_CONFIG *picture,
                                  int block_size, int x_start, int y_start);
+
+// Gets the two hashes of the block_size block at y_src as
+// av2_get_block_hash_value() computes them, when the table kept them for this
+// block of its frame: y_src is frame_buf + y_pos * stride + x_pos. Returns 0
+// otherwise.
+int av2_hash_get_frame_block_hash(const hash_table *p_hash_table,
+                                  const uint16_t *y_src, int stride, int x_pos,
+                                  int y_pos, int block_size,
+                                  uint32_t *hash_value1, uint32_t *hash_value2);
 
 void av2_get_block_hash_value(IntraBCHashInfo *intrabc_hash_info,
                               const uint16_t *y_src, int stride, int block_size,
