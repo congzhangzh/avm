@@ -104,9 +104,39 @@ static void dec_set_mb_mi(CommonModeInfoParams *mi_params, int width,
 
   mi_params->mi_alloc_bsize = BLOCK_4X4;
   mi_params->mi_alloc_stride = mi_params->mi_stride;
+  // The geometry may have changed: dec_setup_mi() fills the grid again.
+  mi_params->submi_grid_prefilled = 0;
 
   assert(mi_size_wide[mi_params->mi_alloc_bsize] ==
          mi_size_high[mi_params->mi_alloc_bsize]);
+}
+
+// Fills submi_grid_base as set_mi_offsets() would for blocks covering the
+// whole frame: entry (r, c) inside the frame points to the 'mi_alloc_sub'
+// element of (r, c), the rest of the grid is NULL. These pointers depend only
+// on the position and on the geometry, so set_mi_offsets() stores only a
+// block's top-left entry afterwards (submi_grid_prefilled), and the grid is
+// filled again only after dec_set_mb_mi() or dec_free_mi(). An entry of a
+// position that no block of the current frame has covered (yet) now holds its
+// pointer instead of NULL; every reader dereferences an entry it uses without
+// a NULL test (span_submv(s), assign_warpmv(), get_block_mv()), so on any
+// input that does not dereference a NULL entry before, the values read are
+// the same.
+static void dec_prefill_submi_grid(CommonModeInfoParams *mi_params,
+                                   int mi_grid_size) {
+  if (mi_params->submi_grid_prefilled) return;
+  memset(mi_params->submi_grid_base, 0,
+         mi_grid_size * sizeof(*mi_params->submi_grid_base));
+  const int alloc_log2 = mi_size_wide_log2[mi_params->mi_alloc_bsize];
+  for (int r = 0; r < mi_params->mi_rows; r++) {
+    SUBMB_INFO *const row = mi_params->mi_alloc_sub +
+                            (r >> alloc_log2) * mi_params->mi_alloc_stride;
+    SUBMB_INFO **const dst =
+        mi_params->submi_grid_base + r * mi_params->mi_stride;
+    for (int c = 0; c < mi_params->mi_cols; c++)
+      dst[c] = row + (c >> alloc_log2);
+  }
+  mi_params->submi_grid_prefilled = 1;
 }
 
 static void dec_setup_mi(CommonModeInfoParams *mi_params) {
@@ -114,8 +144,7 @@ static void dec_setup_mi(CommonModeInfoParams *mi_params) {
       mi_params->mi_stride * calc_mi_size(mi_params->mi_rows);
   memset(mi_params->mi_grid_base, 0,
          mi_grid_size * sizeof(*mi_params->mi_grid_base));
-  memset(mi_params->submi_grid_base, 0,
-         mi_grid_size * sizeof(*mi_params->submi_grid_base));
+  dec_prefill_submi_grid(mi_params, mi_grid_size);
   memset(mi_params->cctx_type_map, 0,
          mi_grid_size * sizeof(*mi_params->cctx_type_map));
   av2_reset_txk_skip_array_using_mi_params(mi_params);
@@ -130,6 +159,7 @@ static void dec_free_mi(CommonModeInfoParams *mi_params) {
   mi_params->mi_alloc_sub = NULL;
   avm_free(mi_params->submi_grid_base);
   mi_params->submi_grid_base = NULL;
+  mi_params->submi_grid_prefilled = 0;
   mi_params->mi_alloc_size = 0;
   avm_free(mi_params->tx_type_map);
   mi_params->tx_type_map = NULL;

@@ -1658,6 +1658,14 @@ struct CommonModeInfoParams {
    */
   SUBMB_INFO **submi_grid_base;
   /*!
+   * Decoder only (0 otherwise): every entry of 'submi_grid_base' inside the
+   * frame (mi_rows x mi_cols) already holds the pointer set_mi_offsets()
+   * stores there, a function of the position and of the geometry alone, so
+   * set_mi_offsets() stores only a block's top-left entry. Cleared whenever
+   * the geometry or the arrays change.
+   */
+  int submi_grid_prefilled;
+  /*!
    * Number of allocated elements in 'mi_grid_base' (and 'tx_type_map' also).
    */
   int mi_grid_size;
@@ -4249,7 +4257,11 @@ static INLINE void set_mi_offsets(const CommonModeInfoParams *const mi_params,
   const int mi_stride = mi_params->mi_stride;
   SUBMB_INFO *const alloc_sub = mi_params->mi_alloc_sub;
   SUBMB_INFO **const submi = xd->submi;
-  for (int y = 0; y < y_inside_boundary; y++) {
+  // The decoder fills the whole grid with these pointers once per geometry
+  // (see 'submi_grid_prefilled'): each store below would rewrite the value
+  // the entry already holds.
+  const int rows = mi_params->submi_grid_prefilled ? 0 : y_inside_boundary;
+  for (int y = 0; y < rows; y++) {
     SUBMB_INFO *const row =
         alloc_sub + ((mi_row + y) >> alloc_log2) * alloc_stride;
     SUBMB_INFO **const dst = submi + y * mi_stride;
