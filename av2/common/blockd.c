@@ -12,6 +12,7 @@
 
 #include <assert.h>
 #include <math.h>
+#include <string.h>
 
 #include "avm_ports/system_state.h"
 
@@ -37,28 +38,37 @@ void av2_reset_is_mi_coded_map(MACROBLOCKD *xd, int stride) {
   xd->is_mi_coded_stride = stride;
 }
 
-void av2_mark_block_as_coded(MACROBLOCKD *xd, BLOCK_SIZE bsize,
-                             BLOCK_SIZE sb_size) {
-  const int mi_row = xd->mi_row;
-  const int mi_col = xd->mi_col;
+// Sets the is_mi_coded entries of the block to value, one row at a time.
+static void set_block_coded(MACROBLOCKD *xd, int mi_row, int mi_col,
+                            BLOCK_SIZE bsize, BLOCK_SIZE sb_size,
+                            uint8_t value) {
   const int sb_mi_size = mi_size_wide[sb_size];
   const int mi_row_offset = mi_row & (sb_mi_size - 1);
   const int mi_col_offset = mi_col & (sb_mi_size - 1);
+  const int bw = mi_size_wide[bsize];
+  const int bh = mi_size_high[bsize];
+  assert(xd->tree_type == SHARED_PART || xd->tree_type == LUMA_PART ||
+         xd->tree_type == CHROMA_PART);
+  // Same planes as before for any tree type (none for an invalid one).
+  uint8_t *const luma =
+      (xd->tree_type == SHARED_PART || xd->tree_type == LUMA_PART)
+          ? xd->is_mi_coded[0]
+          : NULL;
+  uint8_t *const chroma =
+      (xd->tree_type == SHARED_PART || xd->tree_type == CHROMA_PART)
+          ? xd->is_mi_coded[1]
+          : NULL;
+  for (int r = 0; r < bh; ++r) {
+    const int pos =
+        (mi_row_offset + r) * xd->is_mi_coded_stride + mi_col_offset;
+    if (luma) memset(luma + pos, value, bw);
+    if (chroma) memset(chroma + pos, value, bw);
+  }
+}
 
-  for (int r = 0; r < mi_size_high[bsize]; ++r)
-    for (int c = 0; c < mi_size_wide[bsize]; ++c) {
-      const int pos =
-          (mi_row_offset + r) * xd->is_mi_coded_stride + mi_col_offset + c;
-      switch (xd->tree_type) {
-        case SHARED_PART:
-          xd->is_mi_coded[0][pos] = 1;
-          xd->is_mi_coded[1][pos] = 1;
-          break;
-        case LUMA_PART: xd->is_mi_coded[0][pos] = 1; break;
-        case CHROMA_PART: xd->is_mi_coded[1][pos] = 1; break;
-        default: assert(0 && "Invalid tree type");
-      }
-    }
+void av2_mark_block_as_coded(MACROBLOCKD *xd, BLOCK_SIZE bsize,
+                             BLOCK_SIZE sb_size) {
+  set_block_coded(xd, xd->mi_row, xd->mi_col, bsize, sb_size, 1);
 }
 
 void av2_mark_block_as_not_coded(MACROBLOCKD *xd, int mi_row, int mi_col,
@@ -88,24 +98,7 @@ void av2_mark_block_as_not_coded(MACROBLOCKD *xd, int mi_row, int mi_col,
 
 void av2_mark_block_as_pseudo_coded(MACROBLOCKD *xd, int mi_row, int mi_col,
                                     BLOCK_SIZE bsize, BLOCK_SIZE sb_size) {
-  const int sb_mi_size = mi_size_wide[sb_size];
-  const int mi_row_offset = mi_row & (sb_mi_size - 1);
-  const int mi_col_offset = mi_col & (sb_mi_size - 1);
-
-  for (int r = 0; r < mi_size_high[bsize]; ++r)
-    for (int c = 0; c < mi_size_wide[bsize]; ++c) {
-      const int pos =
-          (mi_row_offset + r) * xd->is_mi_coded_stride + mi_col_offset + c;
-      switch (xd->tree_type) {
-        case SHARED_PART:
-          xd->is_mi_coded[0][pos] = 2;
-          xd->is_mi_coded[1][pos] = 2;
-          break;
-        case LUMA_PART: xd->is_mi_coded[0][pos] = 2; break;
-        case CHROMA_PART: xd->is_mi_coded[1][pos] = 2; break;
-        default: assert(0 && "Invalid tree type");
-      }
-    }
+  set_block_coded(xd, mi_row, mi_col, bsize, sb_size, 2);
 }
 
 PARTITION_TREE *av2_alloc_ptree_node(PARTITION_TREE *parent, int index) {
@@ -387,8 +380,8 @@ void translate_pcwiener_filters_to_wienerns(AV2_COMMON *cm) {
   const int set_index = 0;  // get_filter_set_index(base_qindex, qindex_offset);
 
   const int num_pc_wiener_filters = NUM_PC_WIENER_FILTERS;
-  const int(*wienerns_coeffs)[WIENERNS_COEFCFG_LEN] = nsfilter_params->coeffs;
-  const int16_t(*pcwiener_filters_luma)[NUM_PC_WIENER_TAPS_LUMA] =
+  const int (*wienerns_coeffs)[WIENERNS_COEFCFG_LEN] = nsfilter_params->coeffs;
+  const int16_t (*pcwiener_filters_luma)[NUM_PC_WIENER_TAPS_LUMA] =
       get_filter_set(set_index);
   const int precision_diff =
       PC_WIENER_PREC_FILTER - nsfilter_params->nsfilter_config.prec_bits;
