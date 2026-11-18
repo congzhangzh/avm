@@ -416,6 +416,12 @@ static void free_sbi(CommonSBInfoParams *sbi_params) {
   for (int i = 0; i < sbi_params->sbi_alloc_size; ++i) {
     av2_free_ptree_recursive(sbi_params->sbi_grid_base[i].ptree_root[0]);
     av2_free_ptree_recursive(sbi_params->sbi_grid_base[i].ptree_root[1]);
+    PARTITION_TREE *spare = sbi_params->sbi_grid_base[i].ptree_spare;
+    while (spare != NULL) {
+      PARTITION_TREE *const next = spare->parent;
+      avm_free(spare);
+      spare = next;
+    }
   }
 
   avm_free(sbi_params->sbi_grid_base);
@@ -538,6 +544,7 @@ static int alloc_sbi(CommonSBInfoParams *sbi_params) {
     for (int i = 0; i < sbi_size; ++i) {
       sbi_params->sbi_grid_base[i].ptree_root[0] = NULL;
       sbi_params->sbi_grid_base[i].ptree_root[1] = NULL;
+      sbi_params->sbi_grid_base[i].ptree_spare = NULL;
       sbi_params->sbi_grid_base[i].sb_active_mode = BRU_ACTIVE_SB;
     }
   }

@@ -1860,6 +1860,48 @@ static void set_sb_mv_precision(SB_INFO *sbi, AV2Decoder *const pbi) {
   sbi->sb_mv_precision = cm->features.fr_mv_precision;
 }
 
+// Partition-tree nodes are recycled per superblock instead of being freed and
+// calloc'ed again for every superblock of every frame: the nodes of the
+// superblock's previous tree go to its spare list (SB_INFO.ptree_spare) and
+// new nodes are taken from there first. A recycled node is reset to exactly
+// the state av2_alloc_ptree_node() gives a new one, and the previous tree is
+// released at the same point as before, so no reader can observe a
+// difference. Only the thread that parses a superblock touches its trees and
+// its spare list. A superblock never holds more nodes than its largest tree
+// so far; free_sbi() frees the spare lists.
+static AVM_INLINE PARTITION_TREE *dec_alloc_ptree_node(SB_INFO *const sbi,
+                                                       PARTITION_TREE *parent,
+                                                       int index) {
+  PARTITION_TREE *const ptree = sbi->ptree_spare;
+  if (ptree == NULL) return av2_alloc_ptree_node(parent, index);
+  sbi->ptree_spare = ptree->parent;
+  // Same contents as av2_alloc_ptree_node(): zeroed, then these fields.
+  memset(ptree, 0, sizeof(*ptree));
+  ptree->parent = parent;
+  ptree->index = index;
+  ptree->partition = PARTITION_INVALID;
+  ptree->is_settled = 0;
+  return ptree;
+}
+
+// Moves every node of 'ptree' to the spare list of 'sbi'.
+static void dec_release_ptree_recursive(SB_INFO *const sbi,
+                                        PARTITION_TREE *ptree) {
+  if (ptree == NULL) return;
+  for (int i = 0; i < 4; ++i)
+    dec_release_ptree_recursive(sbi, ptree->sub_tree[i]);
+  ptree->parent = sbi->ptree_spare;
+  sbi->ptree_spare = ptree;
+}
+
+// Decoder counterpart of av2_reset_ptree_in_sbi().
+static AVM_INLINE void dec_reset_ptree_in_sbi(SB_INFO *const sbi,
+                                              TREE_TYPE tree_type) {
+  const int idx = av2_get_sdp_idx(tree_type);
+  dec_release_ptree_recursive(sbi, sbi->ptree_root[idx]);
+  sbi->ptree_root[idx] = dec_alloc_ptree_node(sbi, NULL, 0);
+}
+
 // TODO(slavarnway): eliminate bsize and subsize in future commits
 static AVM_INLINE void decode_partition(
     AV2Decoder *const pbi, ThreadData *const td, int mi_row, int mi_col,
@@ -2036,39 +2078,39 @@ static AVM_INLINE void decode_partition(
       case PARTITION_VERT_4A:
       case PARTITION_VERT_4B:
       case PARTITION_SPLIT:
-        ptree->sub_tree[0] = av2_alloc_ptree_node(ptree, 0);
-        ptree->sub_tree[1] = av2_alloc_ptree_node(ptree, 1);
-        ptree->sub_tree[2] = av2_alloc_ptree_node(ptree, 2);
-        ptree->sub_tree[3] = av2_alloc_ptree_node(ptree, 3);
+        ptree->sub_tree[0] = dec_alloc_ptree_node(sbi, ptree, 0);
+        ptree->sub_tree[1] = dec_alloc_ptree_node(sbi, ptree, 1);
+        ptree->sub_tree[2] = dec_alloc_ptree_node(sbi, ptree, 2);
+        ptree->sub_tree[3] = dec_alloc_ptree_node(sbi, ptree, 3);
         if (is_intra_sdp_enabled && xd->tree_type == SHARED_PART) {
-          ptree_luma->sub_tree[0] = av2_alloc_ptree_node(ptree_luma, 0);
-          ptree_luma->sub_tree[1] = av2_alloc_ptree_node(ptree_luma, 1);
-          ptree_luma->sub_tree[2] = av2_alloc_ptree_node(ptree_luma, 2);
-          ptree_luma->sub_tree[3] = av2_alloc_ptree_node(ptree_luma, 3);
+          ptree_luma->sub_tree[0] = dec_alloc_ptree_node(sbi, ptree_luma, 0);
+          ptree_luma->sub_tree[1] = dec_alloc_ptree_node(sbi, ptree_luma, 1);
+          ptree_luma->sub_tree[2] = dec_alloc_ptree_node(sbi, ptree_luma, 2);
+          ptree_luma->sub_tree[3] = dec_alloc_ptree_node(sbi, ptree_luma, 3);
         }
         break;
       case PARTITION_HORZ:
       case PARTITION_VERT:
-        ptree->sub_tree[0] = av2_alloc_ptree_node(ptree, 0);
-        ptree->sub_tree[1] = av2_alloc_ptree_node(ptree, 1);
+        ptree->sub_tree[0] = dec_alloc_ptree_node(sbi, ptree, 0);
+        ptree->sub_tree[1] = dec_alloc_ptree_node(sbi, ptree, 1);
 
         if (is_intra_sdp_enabled && xd->tree_type == SHARED_PART) {
-          ptree_luma->sub_tree[0] = av2_alloc_ptree_node(ptree_luma, 0);
-          ptree_luma->sub_tree[1] = av2_alloc_ptree_node(ptree_luma, 1);
+          ptree_luma->sub_tree[0] = dec_alloc_ptree_node(sbi, ptree_luma, 0);
+          ptree_luma->sub_tree[1] = dec_alloc_ptree_node(sbi, ptree_luma, 1);
         }
         break;
       case PARTITION_HORZ_3:
       case PARTITION_VERT_3:
-        ptree->sub_tree[0] = av2_alloc_ptree_node(ptree, 0);
-        ptree->sub_tree[1] = av2_alloc_ptree_node(ptree, 1);
-        ptree->sub_tree[2] = av2_alloc_ptree_node(ptree, 2);
-        ptree->sub_tree[3] = av2_alloc_ptree_node(ptree, 3);
+        ptree->sub_tree[0] = dec_alloc_ptree_node(sbi, ptree, 0);
+        ptree->sub_tree[1] = dec_alloc_ptree_node(sbi, ptree, 1);
+        ptree->sub_tree[2] = dec_alloc_ptree_node(sbi, ptree, 2);
+        ptree->sub_tree[3] = dec_alloc_ptree_node(sbi, ptree, 3);
 
         if (is_intra_sdp_enabled && xd->tree_type == SHARED_PART) {
-          ptree_luma->sub_tree[0] = av2_alloc_ptree_node(ptree_luma, 0);
-          ptree_luma->sub_tree[1] = av2_alloc_ptree_node(ptree_luma, 1);
-          ptree_luma->sub_tree[2] = av2_alloc_ptree_node(ptree_luma, 2);
-          ptree_luma->sub_tree[3] = av2_alloc_ptree_node(ptree_luma, 3);
+          ptree_luma->sub_tree[0] = dec_alloc_ptree_node(sbi, ptree_luma, 0);
+          ptree_luma->sub_tree[1] = dec_alloc_ptree_node(sbi, ptree_luma, 1);
+          ptree_luma->sub_tree[2] = dec_alloc_ptree_node(sbi, ptree_luma, 2);
+          ptree_luma->sub_tree[3] = dec_alloc_ptree_node(sbi, ptree_luma, 3);
         }
         break;
       default: break;
@@ -2323,8 +2365,8 @@ static AVM_INLINE void decode_partition_sb(AV2Decoder *const pbi,
   const int is_intra_sdp_enabled = is_sdp_enabled_in_keyframe(cm);
 
   if (parse_decode_flag & 1) {
-    av2_reset_ptree_in_sbi(xd->sbi, xd->tree_type);
-    if (is_intra_sdp_enabled) av2_reset_ptree_in_sbi(xd->sbi, CHROMA_PART);
+    dec_reset_ptree_in_sbi(xd->sbi, xd->tree_type);
+    if (is_intra_sdp_enabled) dec_reset_ptree_in_sbi(xd->sbi, CHROMA_PART);
   }
   decode_partition(
       pbi, td, mi_row, mi_col, reader, bsize, xd->sbi,
