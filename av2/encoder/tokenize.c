@@ -28,6 +28,63 @@
 #include "av2/encoder/rdopt.h"
 #include "av2/encoder/tokenize.h"
 
+// av2_get_palette_color_index_context() without building the whole colour
+// order: the order starts with the k distinct neighbour colours (in the order
+// the context derivation lists them), then the other colours ascending; so a
+// colour that is not a neighbour has index k + (its value - the number of
+// neighbour colours below it). Same context and index for any colours below
+// PALETTE_MAX_SIZE (checked for all neighbour and current colours).
+static INLINE int palette_color_ctx_and_index(const uint8_t *color_map,
+                                              int stride, int r, int c,
+                                              int *color_idx) {
+  const int cur = color_map[r * stride + c];
+  int order[3];
+  int k, ctx;
+  if (r > 0 && c > 0) {
+    const int left = color_map[r * stride + c - 1];
+    const int top_left = color_map[(r - 1) * stride + c - 1];
+    const int top = color_map[(r - 1) * stride + c];
+    order[0] = left;
+    if (left == top_left && left == top) {
+      ctx = 4;
+      k = 1;
+    } else if (left == top) {
+      ctx = 3;
+      order[1] = top_left;
+      k = 2;
+    } else if (left == top_left) {
+      ctx = 2;
+      order[1] = top;
+      k = 2;
+    } else if (top_left == top) {
+      ctx = 2;
+      order[0] = top;
+      order[1] = left;
+      k = 2;
+    } else {
+      ctx = 1;
+      order[1] = top;
+      order[2] = top_left;
+      k = 3;
+    }
+  } else {
+    assert(r > 0 || c > 0);
+    ctx = 0;
+    order[0] = c == 0 ? color_map[(r - 1) * stride] : color_map[c - 1];
+    k = 1;
+  }
+  int below = 0;
+  for (int i = 0; i < k; i++) {
+    if (order[i] == cur) {
+      *color_idx = i;
+      return ctx;
+    }
+    below += order[i] < cur;
+  }
+  *color_idx = cur < PALETTE_MAX_SIZE ? k + cur - below : cur;
+  return ctx;
+}
+
 // Chooses a palette token index for each pixel in the block, and determines
 // whether or not to use line flags. Optionally can return the estimated cost
 // for decisions or update the CDF for final encoding..
@@ -118,22 +175,27 @@ static int cost_and_tokenize_map(Av2ColorMapParam *param, TokenExtra **t,
           this_rate += (*identity_row_cost)[ctx][identity_row_flag];
         }
       } else {
-        int color_new_idx;
         const int y = direction ? ax1 : ax2;
         const int x = direction ? ax2 : ax1;
-        uint8_t color_order[PALETTE_MAX_SIZE];
-        const int color_ctx = av2_get_palette_color_index_context(
-            color_map, plane_block_width, y, x, color_order, &color_new_idx);
-        assert(color_new_idx >= 0 && color_new_idx < num_colors);
         if (calc_rate) {
           if (ax1 == 0) {
             this_rate += (*identity_row_cost)[ctx][identity_row_flag];
           }
+          // The colour context and index are needed only when the colour is
+          // coded.
           if (!line_copy_flag && (!(identity_row_flag == 1) || ax1 == 0)) {
+            int color_new_idx;
+            const int color_ctx = palette_color_ctx_and_index(
+                color_map, plane_block_width, y, x, &color_new_idx);
+            assert(color_new_idx >= 0 && color_new_idx < num_colors);
             this_rate +=
                 (*color_cost)[palette_size_idx][color_ctx][color_new_idx];
           }
         } else {
+          int color_new_idx;
+          const int color_ctx = palette_color_ctx_and_index(
+              color_map, plane_block_width, y, x, &color_new_idx);
+          assert(color_new_idx >= 0 && color_new_idx < num_colors);
           (*t)->token = color_new_idx;
           (*t)->color_map_palette_size_idx = palette_size_idx;
           (*t)->color_map_ctx_idx = color_ctx;
