@@ -3262,10 +3262,41 @@ static INLINE void check_traj_intersect(AV2_COMMON *cm,
 // The inter references that the entries of a start frame visited by a
 // projection store on each side: bit rf for rf < INTER_REFS_PER_FRAME, bit
 // INTER_REFS_PER_FRAME for any other inter value.
+// partial[side]: the projection that noted refs[side] skipped bands whose
+// motion field was already filled, so refs[side] does not cover every row.
 typedef struct {
   int known[2];
+  int partial[2];
   unsigned int refs[2];
 } MotionFieldRefsSeen;
+
+// Whether every motion field entry a projection could write in rows
+// [row_lo, row_hi) holds a projection already: the rows and columns that are
+// multiples of the sample step, inside the frame's TMVP grid.
+static int motion_field_rows_filled(TPL_MV_REF *const *tpl_mvs_rows,
+                                    int row_lo, int row_hi, int tmvp_rows,
+                                    int tmvp_cols, int stepl2) {
+  const int step = 1 << stepl2;
+  row_lo = AVMMAX(row_lo, 0);
+  row_lo = ((row_lo + step - 1) >> stepl2) << stepl2;
+  row_hi = AVMMIN(row_hi, tmvp_rows);
+  for (int r = row_lo; r < row_hi; r += step) {
+    const TPL_MV_REF *const row = tpl_mvs_rows[r];
+    // A whole row at a time, without a branch per entry.
+    int invalid = 0;
+    if (step == 1) {
+      for (int c = 0; c < tmvp_cols; c++) {
+        invalid |= row[c].mfmv0.as_int == INVALID_MV;
+      }
+    } else {
+      for (int c = 0; c < tmvp_cols; c += step) {
+        invalid |= row[c].mfmv0.as_int == INVALID_MV;
+      }
+    }
+    if (invalid) return 0;
+  }
+  return 1;
+}
 
 // Calculate the projected motion field from the TMVP mvs that points from
 // start_frame to one side.
@@ -3278,7 +3309,8 @@ static int
 motion_field_projection_side(AV2_COMMON *cm, MV_REFERENCE_FRAME start_frame,
                              MV_REFERENCE_FRAME target_frame, int side_idx,
                              int row_start, int row_end,
-                             MotionFieldRefsSeen *seen, int note_other_side) {
+                             MotionFieldRefsSeen *seen, int note_other_side,
+                             int skip_filled_bands) {
   int ref_offset[INTER_REFS_PER_FRAME] = { 0 };
 
   const RefCntBuffer *const start_frame_buf =
@@ -3360,7 +3392,7 @@ motion_field_projection_side(AV2_COMMON *cm, MV_REFERENCE_FRAME start_frame,
   // A projection of this start frame to the other side over the same rows
   // has noted what the entries store on this side: if none of it can
   // project, no block below writes anything.
-  if (!enable_mv_traj && seen->known[side_idx]) {
+  if (!enable_mv_traj && seen->known[side_idx] && !seen->partial[side_idx]) {
     unsigned int can_write = seen->refs[side_idx] >> INTER_REFS_PER_FRAME;
     for (int rf = 0; rf < INTER_REFS_PER_FRAME; rf++) {
       can_write |= ((seen->refs[side_idx] >> rf) & 1) & ref_projectable[rf];
@@ -3383,6 +3415,7 @@ motion_field_projection_side(AV2_COMMON *cm, MV_REFERENCE_FRAME start_frame,
   // Frame constants for the positions below, read once: the uint8_t store to
   // ref_frame_offset may alias *cm, which would reload them for every block.
   const int stepl2 = cm->tmvp_sample_stepl2;
+  const int step = cm->tmvp_sample_step;
   const int tmvp_rows = cm->mi_params.mi_rows >> TMVP_SHIFT_BITS;
   const int tmvp_cols = cm->mi_params.mi_cols >> TMVP_SHIFT_BITS;
   const int proc_size = cm->tmvp_proc_size;
@@ -3390,11 +3423,37 @@ motion_field_projection_side(AV2_COMMON *cm, MV_REFERENCE_FRAME start_frame,
   const int tmvp_col_offset = cm->tmvp_col_offset;
   TPL_MV_REF **const tpl_mvs_rows = cm->tpl_mvs_rows;
 
-  assert(cm->tmvp_sample_step > 0);
+  // Without trajectories and without a target frame, a block writes only an
+  // entry that holds no projection yet, and check_block_position_in() keeps
+  // it to rows whose processing band lies within MAX_OFFSET_HEIGHT_LOG2 rows
+  // of the block's row: its own band when that is 0. Such writes never make
+  // an entry invalid that was not, so when every entry the blocks of a band
+  // can write is filled at the start of the band, none of them writes
+  // anything and the band is skipped.
+  const int skip_filled =
+      skip_filled_bands && !enable_mv_traj && target_frame == -1;
+  const int band_reach =
+      MAX_OFFSET_HEIGHT_LOG2 > 0 ? MAX_OFFSET_HEIGHT_LOG2 + proc_size : 0;
+
+  int band_end = INT_MIN;
+  int skipped_band = 0;
+
+  assert(step > 0);
   for (int blk_row = row_start; blk_row < AVMMIN(row_end, start_mvs_rows);
-       blk_row += cm->tmvp_sample_step) {
-    for (int blk_col = 0; blk_col < start_mvs_cols;
-         blk_col += cm->tmvp_sample_step) {
+       blk_row += step) {
+    if (skip_filled && blk_row >= band_end) {
+      const int band_start = (blk_row >> proc_sizel2) << proc_sizel2;
+      band_end = band_start + proc_size;
+      if (motion_field_rows_filled(
+              tpl_mvs_rows, band_start - band_reach, band_end + band_reach,
+              tmvp_rows, tmvp_cols, stepl2)) {
+        skipped_band = 1;
+        // Move to the band's last row of this walk; the loop steps past it.
+        blk_row += (band_end - 1 - blk_row) / step * step;
+        continue;
+      }
+    }
+    for (int blk_col = 0; blk_col < start_mvs_cols; blk_col += step) {
       MV_REF *mv_ref = &mv_ref_base[blk_row * start_mvs_cols + blk_col];
       if (note_other_side) {
         const MV_REFERENCE_FRAME other = mv_ref->ref_frame[!side_idx];
@@ -3537,6 +3596,7 @@ motion_field_projection_side(AV2_COMMON *cm, MV_REFERENCE_FRAME start_frame,
   }
   if (note_other_side) {
     seen->known[!side_idx] = 1;
+    seen->partial[!side_idx] = skipped_band;
     seen->refs[!side_idx] = other_refs;
   }
   return 1;
@@ -4191,7 +4251,7 @@ void av2_project_motion_field_rows(AV2_COMMON *cm, const MotionFieldPlan *plan,
     }
     motion_field_projection_side(cm, start_frame, plan->ref[pi].target_frame,
                                  side, row_start, row_end, &seen[start_frame],
-                                 note_other_side);
+                                 note_other_side, pi > 0);
   }
 }
 
