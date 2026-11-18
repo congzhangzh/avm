@@ -3399,7 +3399,10 @@ motion_field_projection_side(AV2_COMMON *cm, MV_REFERENCE_FRAME start_frame,
     }
     if (!can_write) return 1;
   }
-  unsigned int other_refs = 0;
+  // The values the visited entries store on the other side, as a table of
+  // seen values that is turned into other_refs after the walk.
+  uint8_t other_seen[256];
+  if (note_other_side) memset(other_seen, 0, sizeof(other_seen));
 
   // Neighbouring blocks mostly store the same motion vector. Its uncompressed
   // value and its projection depend only on the stored vector and ref_frame,
@@ -3481,12 +3484,7 @@ motion_field_projection_side(AV2_COMMON *cm, MV_REFERENCE_FRAME start_frame,
     for (int blk_col = 0; blk_col < start_mvs_cols; blk_col += step) {
       MV_REF *mv_ref = &mv_ref_base[blk_row * start_mvs_cols + blk_col];
       if (note_other_side) {
-        const MV_REFERENCE_FRAME other = mv_ref->ref_frame[!side_idx];
-        if (is_inter_ref_frame(other)) {
-          other_refs |= 1u << ((unsigned int)other < INTER_REFS_PER_FRAME
-                                   ? other
-                                   : INTER_REFS_PER_FRAME);
-        }
+        other_seen[(uint8_t)mv_ref->ref_frame[!side_idx]] = 1;
       }
       const MV_REFERENCE_FRAME ref_frame = mv_ref->ref_frame[side_idx];
       if (is_inter_ref_frame(ref_frame)) {
@@ -3698,6 +3696,15 @@ motion_field_projection_side(AV2_COMMON *cm, MV_REFERENCE_FRAME start_frame,
     }
   }
   if (note_other_side) {
+    unsigned int other_refs = 0;
+    for (int v = 0; v < 256; v++) {
+      const MV_REFERENCE_FRAME other = (MV_REFERENCE_FRAME)v;
+      if (other_seen[v] && is_inter_ref_frame(other)) {
+        other_refs |= 1u << ((unsigned int)other < INTER_REFS_PER_FRAME
+                                 ? other
+                                 : INTER_REFS_PER_FRAME);
+      }
+    }
     seen->known[!side_idx] = 1;
     seen->partial[!side_idx] = skipped_band;
     seen->refs[!side_idx] = other_refs;
