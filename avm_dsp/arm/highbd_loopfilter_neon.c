@@ -177,6 +177,70 @@ static INLINE uint16x8_t gather_lanes_0_4(uint16x8_t a, uint16x8_t b,
   return vuzpq_u16(ab, cd).val[0];
 }
 
+// The scalar tests of filt_choice_highbd() (avm_dsp/loopfilter.c) on the
+// line-0/line-3 averages r[i * st]: i = 0..3 are sd[-2], sd[-1], sd[0], sd[1],
+// 4 and 5 are the end-direction differences at distance 3 (neg, pos).
+// Returns the number of samples to modify, or -1 when the tests at distance
+// 4 and above must run; then *transition is set for filt_choice_far().
+static INLINE int filt_choice_near(const uint16_t *r, int st,
+                                   int max_samples_neg, int max_samples_pos,
+                                   int q_thresh, int side_thresh,
+                                   int *transition) {
+  // Testing for 1 sample modification
+  if (r[0] > side_thresh || r[3 * st] > side_thresh) return 0;
+  if (max_samples_pos == 1) return 1;
+
+  // Testing for 2 sample modification
+  const int sd_sum = r[st] + r[2 * st];
+  const int side_thresh2 = side_thresh >> 2;
+  if (r[0] > side_thresh2 || r[3 * st] > side_thresh2 ||
+      sd_sum > q_thresh * DF_6_THRESH)
+    return 1;
+
+  // Testing for 3 sample modification
+  const int side_thresh3 = side_thresh >> FILT_8_THRESH_SHIFT;
+  const int end_dir_thresh = (side_thresh * 3) >> 4;
+  if (r[0] > side_thresh3 || r[3 * st] > side_thresh3 ||
+      sd_sum > q_thresh * DF_8_THRESH ||
+      (max_samples_neg > 2 && r[4 * st] > end_dir_thresh) ||
+      r[5 * st] > end_dir_thresh)
+    return 2;
+  if (max_samples_pos == 3) return 3;
+
+  *transition = sd_sum << DF_Q_THRESH_SHIFT;
+  return -1;
+}
+
+// The tests at distance 4 and above, on r[i * st]: i = 0..5 are the
+// end-direction differences (neg, pos) at distances 4, 6 and 7.
+static INLINE int filt_choice_far(const uint16_t *r, int st,
+                                  int max_samples_neg, int max_samples_pos,
+                                  int q_thresh, int side_thresh,
+                                  int transition) {
+  // 4 sample modification
+  int end_dir_thresh = (side_thresh * 4) >> 4;
+  if (transition > q_thresh * q_first[0] ||
+      (max_samples_neg >= 4 && r[0] > end_dir_thresh) || r[st] > end_dir_thresh)
+    return 3;
+  if (max_samples_pos <= 4) return 4;
+
+  // 6 sample modification
+  end_dir_thresh = (side_thresh * 6) >> 4;
+  if (transition > q_thresh * q_first[2] ||
+      (max_samples_neg >= 6 && r[2 * st] > end_dir_thresh) ||
+      r[3 * st] > end_dir_thresh)
+    return 4;
+  if (max_samples_pos <= 6) return 6;
+
+  // 8 sample modification (using diff 7 so it stays within 8 samples)
+  end_dir_thresh = (side_thresh * 8) >> 4;
+  if (transition > q_thresh * q_first[4] ||
+      (max_samples_neg >= 7 && r[4 * st] > end_dir_thresh) ||
+      r[5 * st] > end_dir_thresh)
+    return 6;
+  return MAX_DBL_FLT_LEN;
+}
+
 // Number of samples to modify on each side (filt_choice_highbd() in
 // avm_dsp/loopfilter.c), from lines 0 and 3. px[PX(-4)]..px[PX(3)] must be
 // loaded; load_far() fills px[PX(-8)]..px[PX(-5)] and px[PX(4)]..px[PX(7)]
@@ -210,29 +274,12 @@ static INLINE int filt_choice_neon(uint16x4_t *px, const uint16_t *s, int pitch,
                                     avg_lines_0_3(sd_p0p1), d3, d3));
   }
 
-  // Testing for 1 sample modification
-  if (res[0] > side_thresh || res[3] > side_thresh) return 0;
-  if (max_samples_pos == 1) return 1;
-
-  // Testing for 2 sample modification
-  const int sd_sum = res[1] + res[2];
-  const int side_thresh2 = side_thresh >> 2;
-  if (res[0] > side_thresh2 || res[3] > side_thresh2 ||
-      sd_sum > q_thresh * DF_6_THRESH)
-    return 1;
-
-  // Testing for 3 sample modification
-  const int side_thresh3 = side_thresh >> FILT_8_THRESH_SHIFT;
-  int end_dir_thresh = (side_thresh * 3) >> 4;
-  if (res[0] > side_thresh3 || res[3] > side_thresh3 ||
-      sd_sum > q_thresh * DF_8_THRESH ||
-      (max_samples_neg > 2 && res[4] > end_dir_thresh) ||
-      res[5] > end_dir_thresh)
-    return 2;
-  if (max_samples_pos == 3) return 3;
+  int transition = 0;
+  const int near = filt_choice_near(res, 1, max_samples_neg, max_samples_pos,
+                                    q_thresh, side_thresh, &transition);
+  if (near >= 0) return near;
 
   // Testing for 4 sample modification and above
-  const int transition = sd_sum << DF_Q_THRESH_SHIFT;
   load_far(s, pitch, max_samples_neg, max_samples_pos, px);
 
   // { diff_neg(4), diff_pos(4), diff_neg(6), diff_pos(6), diff_neg(7),
@@ -249,29 +296,8 @@ static INLINE int filt_choice_neon(uint16x4_t *px, const uint16_t *s, int pitch,
                                     d7, d7));
   }
 
-  // 4 sample modification
-  end_dir_thresh = (side_thresh * 4) >> 4;
-  if (transition > q_thresh * q_first[0] ||
-      (max_samples_neg >= 4 && res[0] > end_dir_thresh) ||
-      res[1] > end_dir_thresh)
-    return 3;
-  if (max_samples_pos <= 4) return 4;
-
-  // 6 sample modification
-  end_dir_thresh = (side_thresh * 6) >> 4;
-  if (transition > q_thresh * q_first[2] ||
-      (max_samples_neg >= 6 && res[2] > end_dir_thresh) ||
-      res[3] > end_dir_thresh)
-    return 4;
-  if (max_samples_pos <= 6) return 6;
-
-  // 8 sample modification (using diff 7 so it stays within 8 samples)
-  end_dir_thresh = (side_thresh * 8) >> 4;
-  if (transition > q_thresh * q_first[4] ||
-      (max_samples_neg >= 7 && res[4] > end_dir_thresh) ||
-      res[5] > end_dir_thresh)
-    return 6;
-  return MAX_DBL_FLT_LEN;
+  return filt_choice_far(res, 1, max_samples_neg, max_samples_pos, q_thresh,
+                         side_thresh, transition);
 }
 
 // filt_generic_asym_highbd() on the 4 lines of px. Modifies px[PX(-wn)] ..
@@ -413,4 +439,261 @@ void avm_highbd_lpf_vertical_generic_neon(
 
   store_vert_near(s, pitch, px);
   if (wp > 4) store_vert_far(s, pitch, px);
+}
+
+// Two segments at once: two adjacent segments of one horizontal edge
+// (s[0..3] and s[4..7]). r[PX(k)] holds position k of the 8 lines, lanes
+// 0..3 the lines of segment 0 and lanes 4..7 those of segment 1. Each
+// segment gets exactly what the single-segment kernel would do to it: the
+// decision values of both come out of the same vectors, but the decision,
+// the filter lengths and the filter stay per segment.
+
+// The cases where the single kernel returns before or at the start of its
+// decision (filt_choice_neon() returning 0 up front).
+static INLINE int dual_seg_on(int msn, int msp, int q, int side) {
+  return msn >= 1 && q && side && msp >= msn;
+}
+
+// Fills r[PX(-8)]..r[PX(-5)] and r[PX(4)]..r[PX(7)] once segment h with
+// undecided[h] set reaches the tests at distance 4 and above.
+typedef void (*load_far8_fn)(const uint16_t *s, int pitch, const int *msn,
+                             const int *msp, const int *undecided,
+                             uint16x8_t *r);
+
+// filt_choice_neon() for both segments; r[PX(-4)]..r[PX(3)] must be loaded.
+static INLINE void dual_filt_choice(uint16x8_t *r, const uint16_t *s, int pitch,
+                                    load_far8_fn load_far, const int *msn,
+                                    const int *msp, const int *q,
+                                    const int *side, int *filter) {
+  assert(msp[0] == 1 || msp[0] == 3 || msp[0] == 4 || msp[0] == 6 ||
+         msp[0] == 8);
+  assert(msp[1] == 1 || msp[1] == 3 || msp[1] == 4 || msp[1] == 6 ||
+         msp[1] == 8);
+#define S16(k) vreinterpretq_s16_u16(r[PX(k)])
+  const int16x8_t m1 = S16(-1), p0 = S16(0);
+  const int16x8_t gn = vsubq_s16(m1, S16(-2));
+  const int16x8_t gp = vsubq_s16(p0, S16(1));
+
+  // res[2 * i + h]: decision value i of segment h, in the order that
+  // filt_choice_near() (then filt_choice_far()) reads.
+  DECLARE_ALIGNED(16, uint16_t, res[16]);
+  {
+    const int16x8_t sd_m2 = sec_deriv(S16(-3), S16(-2), m1);
+    const int16x8_t sd_m1 = sec_deriv(S16(-2), m1, p0);
+    const int16x8_t sd_p0 = sec_deriv(m1, p0, S16(1));
+    const int16x8_t sd_p1 = sec_deriv(p0, S16(1), S16(2));
+    const uint16x8_t dn3 = avg_lines_0_3(end_dir_diff(m1, S16(-4), gn, 3));
+    const uint16x8_t dp3 = avg_lines_0_3(end_dir_diff(p0, S16(3), gp, 3));
+    vst1q_u16(res,
+              gather_lanes_0_4(avg_lines_0_3(sd_m2), avg_lines_0_3(sd_m1),
+                               avg_lines_0_3(sd_p0), avg_lines_0_3(sd_p1)));
+    vst1q_u16(res + 8, gather_lanes_0_4(dn3, dp3, dn3, dp3));
+  }
+
+  int transition[2] = { 0, 0 };
+  for (int h = 0; h < 2; ++h) {
+    filter[h] = filt_choice_near(res + h, 2, msn[h], msp[h], q[h], side[h],
+                                 &transition[h]);
+  }
+  if (filter[0] >= 0 && filter[1] >= 0) return;
+
+  const int undecided[2] = { filter[0] < 0, filter[1] < 0 };
+  load_far(s, pitch, msn, msp, undecided, r);
+  {
+    const uint16x8_t dn4 = avg_lines_0_3(end_dir_diff(m1, S16(-5), gn, 4));
+    const uint16x8_t dp4 = avg_lines_0_3(end_dir_diff(p0, S16(4), gp, 4));
+    const uint16x8_t dn6 = avg_lines_0_3(end_dir_diff(m1, S16(-7), gn, 6));
+    const uint16x8_t dp6 = avg_lines_0_3(end_dir_diff(p0, S16(6), gp, 6));
+    const uint16x8_t dn7 = avg_lines_0_3(end_dir_diff(m1, S16(-8), gn, 7));
+    const uint16x8_t dp7 = avg_lines_0_3(end_dir_diff(p0, S16(7), gp, 7));
+    vst1q_u16(res, gather_lanes_0_4(dn4, dp4, dn6, dp6));
+    vst1q_u16(res + 8, gather_lanes_0_4(dn7, dp7, dn7, dp7));
+  }
+#undef S16
+  for (int h = 0; h < 2; ++h) {
+    if (!undecided[h]) continue;
+    filter[h] = filt_choice_far(res + h, 2, msn[h], msp[h], q[h], side[h],
+                                transition[h]);
+  }
+}
+
+// Filters both segments of r over positions -lo..hi-1 (which must cover
+// -2..1 and every active segment's -wn..wp-1) into f0 (segment 0) and f1
+// (segment 1); ch[h] is set when segment h changed.
+static INLINE void dual_filter(const uint16x8_t *r, int lo, int hi,
+                               const int *q, const int *wn, const int *wp,
+                               int bd, uint16x4_t *f0, uint16x4_t *f1,
+                               int *ch) {
+  for (int k = -lo; k < hi; ++k) {
+    f0[PX(k)] = vget_low_u16(r[PX(k)]);
+    f1[PX(k)] = vget_high_u16(r[PX(k)]);
+  }
+  ch[0] =
+      wn[0] >= 1 && filt_generic_asym_neon(f0, q[0], wn[0], wp[0], bd, 0, 0);
+  ch[1] =
+      wn[1] >= 1 && filt_generic_asym_neon(f1, q[1], wn[1], wp[1], bd, 0, 0);
+}
+
+#if defined(__aarch64__)
+// dual_filter() in 16-bit lanes, in place on r, for the common case of both
+// segments active with the same lengths wn, wp. Returns 0 (and changes
+// nothing) when a clamp bound does not fit in int16; the caller then uses
+// dual_filter(). Exact for samples within the bit depth (as the decision):
+// - 3 * (p0 - m1) - (p1 - m2) is at most 4 * 4095 in magnitude; vqshl by 2
+//   saturates at +-32767, beyond the clamp bound, so the clamp result is
+//   that of the C code.
+// - vqrdmulh(delta, 16 * m) is (2 * delta * 16 * m + 2^15) >> 16, i.e.
+//   ROUND_POWER_OF_TWO(delta * m, 3 + DF_SHIFT) with m = w_mult * (w - i)
+//   <= 120, and never saturates.
+// - sample +- adj stays within int16 (|adj| <= 32767 * 120 >> 11), and the
+//   min/max is clip_pixel_highbd().
+static INLINE int dual_filter16_same(uint16x8_t *r, const int *q, int wn,
+                                     int wp, int bd, int *ch) {
+  const int width = AVMMAX(wn, wp);
+  const int c0 = q[0] * q_thresh_mults[width - 1];
+  const int c1 = q[1] * q_thresh_mults[width - 1];
+  if (c0 > INT16_MAX || c1 > INT16_MAX) return 0;
+#define S16(k) vreinterpretq_s16_u16(r[PX(k)])
+  const int16x8_t d = vsubq_s16(vmulq_n_s16(vsubq_s16(S16(0), S16(-1)), 3),
+                                vsubq_s16(S16(1), S16(-2)));
+  const uint16x8_t du = vreinterpretq_u16_s16(d);
+  ch[0] = vmaxv_u16(vget_low_u16(du)) != 0;
+  ch[1] = vmaxv_u16(vget_high_u16(du)) != 0;
+  if (!ch[0] && !ch[1]) return 1;
+
+  const int16x8_t cv =
+      vcombine_s16(vdup_n_s16((int16_t)c0), vdup_n_s16((int16_t)c1));
+  const int16x8_t delta =
+      vmaxq_s16(vminq_s16(vqshlq_n_s16(d, 2), cv), vnegq_s16(cv));
+  const int16x8_t zero = vdupq_n_s16(0);
+  const int16x8_t max_val = vdupq_n_s16((int16_t)((1 << bd) - 1));
+
+  const int mn = 16 * w_mult[wn - 1];
+  for (int i = 0; i < wn; ++i) {
+    const int16x8_t adj = vqrdmulhq_n_s16(delta, (int16_t)(mn * (wn - i)));
+    const int16x8_t v = vaddq_s16(S16(-i - 1), adj);
+    r[PX(-i - 1)] =
+        vreinterpretq_u16_s16(vminq_s16(vmaxq_s16(v, zero), max_val));
+  }
+  const int mp = 16 * w_mult[wp - 1];
+  for (int i = 0; i < wp; ++i) {
+    const int16x8_t adj = vqrdmulhq_n_s16(delta, (int16_t)(mp * (wp - i)));
+    const int16x8_t v = vsubq_s16(S16(i), adj);
+    r[PX(i)] = vreinterpretq_u16_s16(vminq_s16(vmaxq_s16(v, zero), max_val));
+  }
+#undef S16
+  return 1;
+}
+#endif  // defined(__aarch64__)
+
+// Horizontal edge: rows -8..-5 and 4..7 that the far tests of a segment
+// still deciding read; the others get a stand-in. A row is loaded 8 wide
+// when either segment reads it: the other half lies in the same frame row
+// next to a segment that is filtered too, and its values only feed tests
+// that the segment's own limits rule out.
+static void load_horz_far8(const uint16_t *s, int pitch, const int *msn,
+                           const int *msp, const int *undecided,
+                           uint16x8_t *r) {
+  int need_n4 = 0, need_n6 = 0, need_n7 = 0, need_p6 = 0, need_p7 = 0;
+  for (int h = 0; h < 2; ++h) {
+    if (!undecided[h]) continue;
+    need_n4 |= msn[h] >= 4;
+    need_n6 |= msn[h] >= 6;
+    need_n7 |= msn[h] >= 7;
+    need_p6 |= msp[h] >= 6;
+    need_p7 |= msp[h] >= 7;
+  }
+  r[PX(-5)] = need_n4 ? vld1q_u16(s - 5 * pitch) : r[PX(-1)];
+  r[PX(-7)] = need_n6 ? vld1q_u16(s - 7 * pitch) : r[PX(-1)];
+  r[PX(-8)] = need_n7 ? vld1q_u16(s - 8 * pitch) : r[PX(-1)];
+  r[PX(4)] = vld1q_u16(s + 4 * pitch);
+  r[PX(6)] = need_p6 ? vld1q_u16(s + 6 * pitch) : r[PX(0)];
+  r[PX(7)] = need_p7 ? vld1q_u16(s + 7 * pitch) : r[PX(0)];
+}
+
+// Two adjacent segments of one horizontal edge: s[0..3] with the parameters
+// of index 0 and s[4..7] with those of index 1. Each segment's stores cover
+// exactly the rows the single kernel stores.
+void avm_highbd_lpf_horizontal_generic_dual_neon(
+    uint16_t *s, int pitch, int filt_width_neg0, int filt_width_pos0,
+    const uint16_t *q_thresh0, const uint16_t *side_thresh0,
+    int filt_width_neg1, int filt_width_pos1, const uint16_t *q_thresh1,
+    const uint16_t *side_thresh1, int bd) {
+  const int msn[2] = { (filt_width_neg0 >> 1) - 1, (filt_width_neg1 >> 1) - 1 };
+  const int msp[2] = { filt_width_pos0 / 2 - 1, filt_width_pos1 / 2 - 1 };
+  const int q[2] = { *q_thresh0, *q_thresh1 };
+  const int side[2] = { *side_thresh0, *side_thresh1 };
+  const int on0 = dual_seg_on(msn[0], msp[0], q[0], side[0]);
+  const int on1 = dual_seg_on(msn[1], msp[1], q[1], side[1]);
+  if (!on0 || !on1) {
+    if (on0) {
+      avm_highbd_lpf_horizontal_generic_neon(s, pitch, filt_width_neg0,
+                                             filt_width_pos0, q_thresh0,
+                                             side_thresh0, bd, 0, 0);
+    } else if (on1) {
+      avm_highbd_lpf_horizontal_generic_neon(s + 4, pitch, filt_width_neg1,
+                                             filt_width_pos1, q_thresh1,
+                                             side_thresh1, bd, 0, 0);
+    }
+    return;
+  }
+
+  uint16x8_t r[16];
+  for (int k = -3; k < 3; ++k) r[PX(k)] = vld1q_u16(s + k * pitch);
+  r[PX(-4)] = (msn[0] > 2 || msn[1] > 2) ? vld1q_u16(s - 4 * pitch) : r[PX(-1)];
+  r[PX(3)] = (msp[0] >= 3 || msp[1] >= 3) ? vld1q_u16(s + 3 * pitch) : r[PX(0)];
+
+  int filter[2];
+  dual_filt_choice(r, s, pitch, load_horz_far8, msn, msp, q, side, filter);
+
+  int wn[2], wp[2];
+  for (int h = 0; h < 2; ++h) {
+    wn[h] = AVMMIN(filter[h], msn[h]);
+    wp[h] = filter[h];
+  }
+  const int act0 = wn[0] >= 1, act1 = wn[1] >= 1;
+  if (!act0 && !act1) return;
+
+  // Rows the filters touch: -3..2 are loaded already, the others may hold
+  // stand-ins and are reloaded.
+  const int lo = AVMMAX(AVMMAX(act0 ? wn[0] : 0, act1 ? wn[1] : 0), 2);
+  const int hi = AVMMAX(AVMMAX(act0 ? wp[0] : 0, act1 ? wp[1] : 0), 2);
+  for (int k = -lo; k < -3; ++k) r[PX(k)] = vld1q_u16(s + k * pitch);
+  for (int k = 3; k < hi; ++k) r[PX(k)] = vld1q_u16(s + k * pitch);
+
+  int ch[2];
+#if defined(__aarch64__)
+  if (act0 && act1 && wn[0] == wn[1] && wp[0] == wp[1] &&
+      dual_filter16_same(r, q, wn[0], wp[0], bd, ch)) {
+    // Both segments cover the same rows.
+    for (int k = -wn[0]; k < wp[0]; ++k) {
+      if (ch[0] && ch[1]) {
+        vst1q_u16(s + k * pitch, r[PX(k)]);
+      } else if (ch[0]) {
+        vst1_u16(s + k * pitch, vget_low_u16(r[PX(k)]));
+      } else if (ch[1]) {
+        vst1_u16(s + 4 + k * pitch, vget_high_u16(r[PX(k)]));
+      }
+    }
+    return;
+  }
+#endif
+  uint16x4_t f0[16], f1[16];
+  dual_filter(r, lo, hi, q, wn, wp, bd, f0, f1, ch);
+  if (!ch[0] && !ch[1]) return;
+
+  // Store the rows each changed segment's filter covers, and only those.
+  const int sn0 = ch[0] ? wn[0] : 0, sp0 = ch[0] ? wp[0] : 0;
+  const int sn1 = ch[1] ? wn[1] : 0, sp1 = ch[1] ? wp[1] : 0;
+  for (int k = -AVMMAX(sn0, sn1); k < AVMMAX(sp0, sp1); ++k) {
+    const int t0 = k < 0 ? -k <= sn0 : k < sp0;
+    const int t1 = k < 0 ? -k <= sn1 : k < sp1;
+    if (t0 && t1) {
+      vst1q_u16(s + k * pitch, vcombine_u16(f0[PX(k)], f1[PX(k)]));
+    } else if (t0) {
+      vst1_u16(s + k * pitch, f0[PX(k)]);
+    } else if (t1) {
+      vst1_u16(s + 4 + k * pitch, f1[PX(k)]);
+    }
+  }
 }
