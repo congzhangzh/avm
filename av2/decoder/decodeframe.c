@@ -570,6 +570,19 @@ static INLINE void extend_mc_border(const struct scale_factors *const sf,
                                     int do_warp, int is_intrabc,
                                     uint16_t *mc_buf, uint16_t **pre,
                                     int *src_stride) {
+  // With an unscaled reference and a full-pel MV in both directions the
+  // predictor reads exactly the b_w x b_h block (the convolve is a copy and
+  // no filter tap reaches outside it). If that block lies inside the
+  // reference frame, the border-extended copy below would only duplicate
+  // frame samples, so read the frame directly. This matters because
+  // update_extend_mc_border_params() pads by AVM_INTERP_EXTEND even for
+  // full-pel MVs (it compares x_step_q4, in 1/1024 units, with
+  // SUBPEL_SHIFTS), which sends every block near a frame edge to the copy.
+  if (!subpel_x_mv && !subpel_y_mv && !av2_is_scaled(sf) && block.x0 >= 0 &&
+      block.y0 >= 0 && block.x1 <= pre_buf->width &&
+      block.y1 <= pre_buf->height) {
+    return;
+  }
   int x_pad = 0, y_pad = 0;
   if (update_extend_mc_border_params(sf, pre_buf, scaled_mv, &block,
                                      subpel_x_mv, subpel_y_mv, do_warp,
