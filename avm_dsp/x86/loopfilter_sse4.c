@@ -1041,3 +1041,17 @@ void avm_highbd_lpf_vertical_generic_sse4_1(
     s += 4 * pitch;
   }
 }
+
+// The SSE4.1 kernel filters one 4-sample segment; run it on both.
+void avm_highbd_lpf_horizontal_generic_dual_sse4_1(
+    uint16_t *s, int pitch, int filt_width_neg0, int filt_width_pos0,
+    const uint16_t *q_thresh0, const uint16_t *side_thresh0,
+    int filt_width_neg1, int filt_width_pos1, const uint16_t *q_thresh1,
+    const uint16_t *side_thresh1, int bd) {
+  avm_highbd_lpf_horizontal_generic_sse4_1(s, pitch, filt_width_neg0,
+                                           filt_width_pos0, q_thresh0,
+                                           side_thresh0, bd, 0, 0);
+  avm_highbd_lpf_horizontal_generic_sse4_1(s + 4, pitch, filt_width_neg1,
+                                           filt_width_pos1, q_thresh1,
+                                           side_thresh1, bd, 0, 0);
+}

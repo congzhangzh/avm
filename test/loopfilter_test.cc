@@ -12,6 +12,7 @@
 
 #include <stdint.h>
 #include <stdio.h>
+#include <algorithm>
 #include <string.h>
 #include <tuple>
 
@@ -41,6 +42,62 @@ const int number_of_iterations = 10000;
 
 const int kSpeedIterations = 50000000;
 
+void InitLoopFilterInput(uint16_t *s, uint16_t *ref_s, ACMRandom *rnd,
+                         const uint8_t limit, const int mask, const int32_t p,
+                         const int i, const uint16_t prob) {
+  uint16_t tmp_s[kNumCoeffs];
+
+  for (int j = 0; j < kNumCoeffs;) {
+    const uint8_t val = rnd->Rand8();
+    if ((val & prob) == prob) {
+      tmp_s[j] = rnd->Rand16();
+      j++;
+    } else {
+      int k = 0;
+      while (k++ < ((val & 0x1f) + 1) && j < kNumCoeffs) {
+        if (j < 1) {
+          tmp_s[j] = rnd->Rand16();
+        } else if (val & 0x20) {  // Increment by a value within the limit.
+          tmp_s[j] = static_cast<uint16_t>(tmp_s[j - 1] + (limit - 1));
+        } else {  // Decrement by a value within the limit.
+          tmp_s[j] = static_cast<uint16_t>(tmp_s[j - 1] - (limit - 1));
+        }
+        j++;
+      }
+    }
+  }
+
+  for (int j = 0; j < kNumCoeffs;) {
+    const uint8_t val = rnd->Rand8();
+    if ((val & prob) == prob) {
+      j++;
+    } else {
+      int k = 0;
+      while (k++ < ((val & 0x1f) + 1) && j < kNumCoeffs) {
+        if (j < 1) {
+          tmp_s[j] = rnd->Rand16();
+        } else if (val & 0x20) {  // Increment by a value within the limit.
+          tmp_s[(j % 32) * 32 + j / 32] = static_cast<uint16_t>(
+              tmp_s[((j - 1) % 32) * 32 + (j - 1) / 32] + (limit - 1));
+        } else {  // Decrement by a value within the limit.
+          tmp_s[(j % 32) * 32 + j / 32] = static_cast<uint16_t>(
+              tmp_s[((j - 1) % 32) * 32 + (j - 1) / 32] - (limit - 1));
+        }
+        j++;
+      }
+    }
+  }
+
+  for (int j = 0; j < kNumCoeffs; j++) {
+    if (i % 2) {
+      s[j] = tmp_s[j] & mask;
+    } else {
+      s[j] = tmp_s[p * (j % p) + j / p] & mask;
+    }
+    ref_s[j] = s[j];
+  }
+}
+
 class LoopFilterTest : public ::testing::TestWithParam<Params> {
  public:
   virtual void SetUp() {
@@ -64,57 +121,7 @@ class LoopFilterTest : public ::testing::TestWithParam<Params> {
   void InitInput(uint16_t *s, uint16_t *ref_s, ACMRandom *rnd,
                  const uint8_t limit, const int mask, const int32_t p,
                  const int i, const uint16_t prob) {
-    uint16_t tmp_s[kNumCoeffs];
-
-    for (int j = 0; j < kNumCoeffs;) {
-      const uint8_t val = rnd->Rand8();
-      if ((val & prob) == prob) {
-        tmp_s[j] = rnd->Rand16();
-        j++;
-      } else {
-        int k = 0;
-        while (k++ < ((val & 0x1f) + 1) && j < kNumCoeffs) {
-          if (j < 1) {
-            tmp_s[j] = rnd->Rand16();
-          } else if (val & 0x20) {  // Increment by a value within the limit.
-            tmp_s[j] = static_cast<uint16_t>(tmp_s[j - 1] + (limit - 1));
-          } else {  // Decrement by a value within the limit.
-            tmp_s[j] = static_cast<uint16_t>(tmp_s[j - 1] - (limit - 1));
-          }
-          j++;
-        }
-      }
-    }
-
-    for (int j = 0; j < kNumCoeffs;) {
-      const uint8_t val = rnd->Rand8();
-      if ((val & prob) == prob) {
-        j++;
-      } else {
-        int k = 0;
-        while (k++ < ((val & 0x1f) + 1) && j < kNumCoeffs) {
-          if (j < 1) {
-            tmp_s[j] = rnd->Rand16();
-          } else if (val & 0x20) {  // Increment by a value within the limit.
-            tmp_s[(j % 32) * 32 + j / 32] = static_cast<uint16_t>(
-                tmp_s[((j - 1) % 32) * 32 + (j - 1) / 32] + (limit - 1));
-          } else {  // Decrement by a value within the limit.
-            tmp_s[(j % 32) * 32 + j / 32] = static_cast<uint16_t>(
-                tmp_s[((j - 1) % 32) * 32 + (j - 1) / 32] - (limit - 1));
-          }
-          j++;
-        }
-      }
-    }
-
-    for (int j = 0; j < kNumCoeffs; j++) {
-      if (i % 2) {
-        s[j] = tmp_s[j] & mask;
-      } else {
-        s[j] = tmp_s[p * (j % p) + j / p] & mask;
-      }
-      ref_s[j] = s[j];
-    }
+    InitLoopFilterInput(s, ref_s, rnd, limit, mask, p, i, prob);
   }
 
  protected:
@@ -210,6 +217,113 @@ void LoopFilterTest::RunSpeedTest() {
       c_time_per_filter_block, opt_time_per_filter_block, scaling);
 }
 TEST_P(LoopFilterTest, DISABLED_RunSpeedTest) { RunSpeedTest(); }
+
+typedef void (*LoopFilterDualFunc)(uint16_t *s, int pitch, int filt_width_neg0,
+                                   int filt_width_pos0,
+                                   const uint16_t *q_thresh0,
+                                   const uint16_t *side_thresh0,
+                                   int filt_width_neg1, int filt_width_pos1,
+                                   const uint16_t *q_thresh1,
+                                   const uint16_t *side_thresh1, int bd);
+
+// <test_func, ref_func, bit_depth>
+typedef tuple<LoopFilterDualFunc, LoopFilterDualFunc, int> DualParams;
+
+// Two adjacent 4-sample segments of a horizontal edge with independent
+// parameters: every pair
+// of filter lengths, random thresholds (zero included), on rough and on smooth
+// data so that every filter length is chosen, often a different one per
+// segment.
+class LoopFilterDualTest : public ::testing::TestWithParam<DualParams> {
+ public:
+  virtual void SetUp() {
+    func_test_ = GET_PARAM(0);
+    func_ref_ = GET_PARAM(1);
+    bit_depth_ = GET_PARAM(2);
+  }
+
+ protected:
+  // Smooth columns with a step at the edge (row 16 of the 32 rows); the
+  // noise and the step differ between groups of 4 columns.
+  void InitSmooth(uint16_t *s, ACMRandom *rnd, int pitch) {
+    const int mask = (1 << bit_depth_) - 1;
+    for (int g = 0; g < 8; ++g) {
+      const int noise = 1 << rnd->PseudoUniform(bit_depth_ - 2);
+      const int use_noise = rnd->PseudoUniform(3);
+      const int step = rnd->PseudoUniform(4) ? rnd->PseudoUniform(64) : 0;
+      const int slope = rnd->PseudoUniform(9) - 4;
+      const int base = rnd->PseudoUniform(mask + 1);
+      for (int c = g * 4; c < g * 4 + 4; ++c) {
+        for (int r = 0; r < 32; ++r) {
+          int v = base + slope * r + (r >= 16 ? step : 0);
+          if (use_noise) v += rnd->PseudoUniform(noise);
+          s[r * pitch + c] =
+              static_cast<uint16_t>(std::min(std::max(v, 0), mask));
+        }
+      }
+    }
+  }
+
+  void CheckResult() {
+    static const int kNeg[] = { 0, 4, 6, 8, 10, 14, 18 };
+    static const int kPos[] = { 4, 8, 10, 14, 18 };
+    const int kIters = 24;
+    ACMRandom rnd(ACMRandom::DeterministicSeed());
+    DECLARE_ALIGNED(16, uint16_t, s[kNumCoeffs]);
+    DECLARE_ALIGNED(16, uint16_t, ref_s[kNumCoeffs]);
+    const int pitch = 32;
+    const int mask = (1 << bit_depth_) - 1;
+    int err_count_total = 0;
+    for (int n0 : kNeg) {
+      for (int p0 : kPos) {
+        for (int n1 : kNeg) {
+          for (int p1 : kPos) {
+            for (int i = 0; i < kIters; ++i) {
+              uint16_t q[2], side[2];
+              for (int h = 0; h < 2; ++h) {
+                q[h] = static_cast<uint16_t>(rnd.PseudoUniform(120) *
+                                             (1 << (bit_depth_ - 8)));
+                side[h] = static_cast<uint16_t>(rnd.PseudoUniform(210) *
+                                                (1 << (bit_depth_ - 8)));
+              }
+              if (i & 1) {
+                InitSmooth(s, &rnd, pitch);
+                memcpy(ref_s, s, sizeof(s));
+              } else {
+                InitLoopFilterInput(s, ref_s, &rnd, 16, mask, pitch, i / 2,
+                                    0xc0);
+              }
+              // The edge is at row 16, columns 8..15.
+              const int off = 8 + pitch * 16;
+              uint16_t *const t = s + off;
+              uint16_t *const r = ref_s + off;
+              func_ref_(r, pitch, n0, p0, &q[0], &side[0], n1, p1, &q[1],
+                        &side[1], bit_depth_);
+              func_test_(t, pitch, n0, p0, &q[0], &side[0], n1, p1, &q[1],
+                         &side[1], bit_depth_);
+              int err = 0;
+              for (int j = 0; j < kNumCoeffs; ++j) err += ref_s[j] != s[j];
+              if (err && !err_count_total) {
+                printf(
+                    "first failure: bd %d neg0 %d pos0 %d neg1 %d pos1 %d "
+                    "iter %d\n",
+                    bit_depth_, n0, p0, n1, p1, i);
+              }
+              err_count_total += err;
+            }
+          }
+        }
+      }
+    }
+    EXPECT_EQ(0, err_count_total)
+        << "Error: C output doesn't match SIMD dual loopfilter output.";
+  }
+
+  LoopFilterDualFunc func_test_;
+  LoopFilterDualFunc func_ref_;
+  int bit_depth_;
+};
+TEST_P(LoopFilterDualTest, CheckResult) { CheckResult(); }
 
 #if HAVE_SSE4_1
 const Params kLoopFilterTest[] = {
@@ -349,6 +463,16 @@ const Params kLoopFilterTest[] = {
 
 INSTANTIATE_TEST_SUITE_P(SSE4_1, LoopFilterTest,
                          ::testing::ValuesIn(kLoopFilterTest));
+
+INSTANTIATE_TEST_SUITE_P(
+    SSE4_1, LoopFilterDualTest,
+    ::testing::Values(make_tuple(&avm_highbd_lpf_horizontal_generic_dual_sse4_1,
+                                 &avm_highbd_lpf_horizontal_generic_dual_c, 8),
+                      make_tuple(&avm_highbd_lpf_horizontal_generic_dual_sse4_1,
+                                 &avm_highbd_lpf_horizontal_generic_dual_c, 10),
+                      make_tuple(&avm_highbd_lpf_horizontal_generic_dual_sse4_1,
+                                 &avm_highbd_lpf_horizontal_generic_dual_c,
+                                 12)));
 #endif  // HAVE_SSE4_1
 
 #if HAVE_NEON
@@ -489,7 +613,18 @@ const Params kLoopFilterTestNeon[] = {
 
 INSTANTIATE_TEST_SUITE_P(NEON, LoopFilterTest,
                          ::testing::ValuesIn(kLoopFilterTestNeon));
+
+INSTANTIATE_TEST_SUITE_P(
+    NEON, LoopFilterDualTest,
+    ::testing::Values(make_tuple(&avm_highbd_lpf_horizontal_generic_dual_neon,
+                                 &avm_highbd_lpf_horizontal_generic_dual_c, 8),
+                      make_tuple(&avm_highbd_lpf_horizontal_generic_dual_neon,
+                                 &avm_highbd_lpf_horizontal_generic_dual_c, 10),
+                      make_tuple(&avm_highbd_lpf_horizontal_generic_dual_neon,
+                                 &avm_highbd_lpf_horizontal_generic_dual_c,
+                                 12)));
 #endif  // HAVE_NEON
 
 GTEST_ALLOW_UNINSTANTIATED_PARAMETERIZED_TEST(LoopFilterTest);
+GTEST_ALLOW_UNINSTANTIATED_PARAMETERIZED_TEST(LoopFilterDualTest);
 }  // namespace

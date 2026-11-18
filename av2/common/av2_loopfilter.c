@@ -1019,6 +1019,75 @@ void av2_filter_block_plane_vert(AV2_COMMON *const cm,
     }
   }
 }
+
+// One unit of a column of the horizontal-edge pass (the body of the
+// original y loop): updates the per-row parameter cache entry y, returns 1
+// when the edge above the unit is filtered (its parameters are in
+// params_buf[y] and its lossless flags in *lossless_prev / *lossless_cur)
+// and sets *advance to the number of units to the next edge.
+static AVM_FORCE_INLINE int horz_edge_unit(
+    AV2_COMMON *const cm, const MACROBLOCKD *const xd, const int plane,
+    const MACROBLOCKD_PLANE *const plane_ptr, const uint32_t mi_row,
+    const uint32_t curr_x, const int y, const uint32_t curr_y, uint32_t *prev_y,
+    const int dlk_rd_flag, const int has_lossless_segment,
+    const int check_tile_edge, AV2_DEBLOCKING_PARAMETERS *params_buf,
+    TX_SIZE *tx_size_buf, int *mi_size_min_width_buf, LPF_PASS_CTX *pass_ctx,
+    int *advance, bool *lossless_prev, bool *lossless_cur) {
+  const uint32_t scale_horz = plane_ptr->subsampling_x;
+  const uint32_t scale_vert = plane_ptr->subsampling_y;
+  AV2_DEBLOCKING_PARAMETERS *const params = &params_buf[y];
+  TX_SIZE cur_tx_size =
+      set_lpf_parameters(params, curr_x, *prev_y, cm, xd, HORZ_EDGE, curr_x,
+                         curr_y, plane, plane_ptr, &tx_size_buf[y],
+                         &mi_size_min_width_buf[y], dlk_rd_flag, pass_ctx);
+  if (cur_tx_size == TX_INVALID) {
+    params->filter_length_neg = 0;
+    params->filter_length_pos = 0;
+
+    cur_tx_size = TX_4X4;
+  }
+
+  int filtered = 0;
+  // Most edges have no filter: test that first, the other checks below
+  // only read state and can only turn a filter off.
+  if ((params->filter_length_neg || params->filter_length_pos) &&
+      (!check_tile_edge ||
+       !is_horz_tile_boundary(&cm->tiles, mi_row + (y << scale_vert)))) {
+    bool is_lossless_current_block = false;
+    bool is_lossless_prev_block = false;
+    if (has_lossless_segment) {
+      is_lossless_current_block = get_lossless_flag(
+          cm, curr_x, curr_y, scale_horz, scale_vert, plane, plane_ptr);
+      is_lossless_prev_block = get_lossless_flag(
+          cm, curr_x, *prev_y, scale_horz, scale_vert, plane, plane_ptr);
+    }
+    filtered = !(is_lossless_current_block && is_lossless_prev_block);
+    *lossless_prev = is_lossless_prev_block;
+    *lossless_cur = is_lossless_current_block;
+  }
+
+  *prev_y = curr_y;
+  tx_size_buf[y] = cur_tx_size;
+  *advance = tx_size_high_unit[cur_tx_size];
+  return filtered;
+}
+
+static AVM_INLINE void horz_filter_edge(uint16_t *p, int dst_stride,
+                                        const AV2_DEBLOCKING_PARAMETERS *params,
+                                        bool lossless_prev, bool lossless_cur,
+                                        int bit_depth) {
+  if (!(lossless_cur || lossless_prev)) {
+    avm_highbd_lpf_horizontal_generic(
+        p, dst_stride, params->filter_length_neg, params->filter_length_pos,
+        &params->q_threshold, &params->side_threshold, bit_depth, 0, 0);
+  } else {
+    avm_highbd_lpf_horizontal_generic_c(
+        p, dst_stride, params->filter_length_neg, params->filter_length_pos,
+        &params->q_threshold, &params->side_threshold, bit_depth, lossless_prev,
+        lossless_cur);
+  }
+}
+
 void av2_filter_block_plane_horz(AV2_COMMON *const cm,
                                  const MACROBLOCKD *const xd, const int plane,
                                  const MACROBLOCKD_PLANE *const plane_ptr,
@@ -1063,82 +1132,84 @@ void av2_filter_block_plane_horz(AV2_COMMON *const cm,
   LPF_PASS_CTX pass_ctx;
   init_lpf_pass_ctx(&pass_ctx, cm, plane_ptr);
 
-  for (int x = 0; x < x_range; x++) {
+  const uint32_t x_origin = (mi_col * MI_SIZE) >> scale_horz;
+  const uint32_t y_origin = (mi_row * MI_SIZE) >> scale_vert;
+  const uint32_t prev_y_init =
+      (mi_row == 0) ? 0 : ((mi_row - 1) * MI_SIZE) >> scale_vert;
+  // Units below the frame are never filtered: set_lpf_parameters() only
+  // fills the cache for units inside the frame, so theirs is empty. A column
+  // walk stops at the first one, unit row y_end.
+  const int y_end =
+      plane_height <= y_origin
+          ? 0
+          : (int)AVMMIN((uint32_t)y_range,
+                        (plane_height - y_origin + MI_SIZE - 1) / MI_SIZE);
+
+  // Columns a = x and b = x + 1 are walked together, top to bottom, always
+  // advancing the one whose next unit is higher (a first on a tie). Column b
+  // thus sees the per-row parameter cache exactly as after the whole walk of
+  // column a, as in a column-by-column walk, and each column's edges are
+  // filtered top to bottom. The two columns touch disjoint samples, so the
+  // filters of an edge row that both columns filter run as one call. The
+  // walk reads no pixel: the parameters come from the mode info only.
+  for (int x = 0; x < x_range;) {
     // Columns right of the frame: see lpf_cache_is_empty().
-    if (((mi_col * MI_SIZE) >> scale_horz) + x * MI_SIZE >= plane_width &&
+    if (x_origin + x * MI_SIZE >= plane_width &&
         lpf_cache_is_empty(mi_size_min_width_buf, y_range))
       break;
-    uint16_t *p = dst_ptr + x * MI_SIZE;
-    uint32_t prev_y =
-        (mi_row == 0) ? 0 : ((mi_row - 1) * MI_SIZE) >> scale_vert;
-
-    AV2_DEBLOCKING_PARAMETERS *params = params_buf;
-    TX_SIZE *tx_size = tx_size_buf;
-    int *mi_size_min_width = mi_size_min_width_buf;
-
-    for (int y = 0; y < y_range;) {
-      // inner loop always filter vertical edges in a MI block. If MI size
-      // is 8x8, it will first filter the vertical edge aligned with a 8x8
-      // block. If 4x4 transform is used, it will then filter the internal
-      // edge aligned with a 4x4 block
-      const uint32_t curr_x = ((mi_col * MI_SIZE) >> scale_horz) + x * MI_SIZE;
-      const uint32_t curr_y = ((mi_row * MI_SIZE) >> scale_vert) + y * MI_SIZE;
-      uint32_t advance_units;
-      TX_SIZE cur_tx_size = TX_4X4;
-
-      // Units below the frame are never filtered: set_lpf_parameters() only
-      // fills the cache for units inside the frame, so theirs is empty.
-      if (curr_y >= plane_height) break;
-
-      cur_tx_size = set_lpf_parameters(
-          params, curr_x, prev_y, cm, xd, HORZ_EDGE, curr_x, curr_y, plane,
-          plane_ptr, tx_size, mi_size_min_width, dlk_rd_flag,
-          &pass_ctx);
-      if (cur_tx_size == TX_INVALID) {
-        params->filter_length_neg = 0;
-        params->filter_length_pos = 0;
-
-        cur_tx_size = TX_4X4;
+    // Pair only inside the frame: right of it, whether column b is walked
+    // at all depends on the cache after column a.
+    const int pair =
+        x + 1 < x_range && x_origin + (x + 1) * MI_SIZE < plane_width;
+    const uint32_t xa = x_origin + x * MI_SIZE;
+    const uint32_t xb = xa + MI_SIZE;
+    uint16_t *const col_a = dst_ptr + x * MI_SIZE;
+    uint16_t *const col_b = col_a + MI_SIZE;
+    uint32_t prev_a = prev_y_init, prev_b = prev_y_init;
+    int ya = 0, yb = pair ? 0 : y_end;
+    while (ya < y_end || yb < y_end) {
+      const int do_a = ya <= yb;
+      const int do_b = yb <= ya;
+      int adv_a = 0, adv_b = 0, ea = 0, eb = 0;
+      bool lpa = false, lca = false, lpb = false, lcb = false;
+      AV2_DEBLOCKING_PARAMETERS pa = { 0, 0, 0, 0 };
+      if (do_a) {
+        ea = horz_edge_unit(cm, xd, plane, plane_ptr, mi_row, xa, ya,
+                            y_origin + ya * MI_SIZE, &prev_a, dlk_rd_flag,
+                            has_lossless_segment, check_tile_edge, params_buf,
+                            tx_size_buf, mi_size_min_width_buf, &pass_ctx,
+                            &adv_a, &lpa, &lca);
+        // Column b may overwrite the cache entry.
+        pa = params_buf[ya];
       }
-
-      // Most edges have no filter: test that first, the other checks below
-      // only read state and can only turn a filter off.
-      if ((params->filter_length_neg || params->filter_length_pos) &&
-          (!check_tile_edge ||
-           !is_horz_tile_boundary(&cm->tiles, mi_row + (y << scale_vert)))) {
-        bool is_lossless_current_block = false;
-        bool is_lossless_prev_block = false;
-        if (has_lossless_segment) {
-          is_lossless_current_block = get_lossless_flag(
-              cm, curr_x, curr_y, scale_horz, scale_vert, plane, plane_ptr);
-          is_lossless_prev_block = get_lossless_flag(
-              cm, curr_x, prev_y, scale_horz, scale_vert, plane, plane_ptr);
+      if (do_b) {
+        eb = horz_edge_unit(cm, xd, plane, plane_ptr, mi_row, xb, yb,
+                            y_origin + yb * MI_SIZE, &prev_b, dlk_rd_flag,
+                            has_lossless_segment, check_tile_edge, params_buf,
+                            tx_size_buf, mi_size_min_width_buf, &pass_ctx,
+                            &adv_b, &lpb, &lcb);
+      }
+      const AV2_DEBLOCKING_PARAMETERS *const pb = &params_buf[yb];
+      if (ea && eb && !(lpa | lca | lpb | lcb)) {
+        avm_highbd_lpf_horizontal_generic_dual(
+            col_a + ya * MI_SIZE * dst_stride, dst_stride, pa.filter_length_neg,
+            pa.filter_length_pos, &pa.q_threshold, &pa.side_threshold,
+            pb->filter_length_neg, pb->filter_length_pos, &pb->q_threshold,
+            &pb->side_threshold, bit_depth);
+      } else {
+        if (ea) {
+          horz_filter_edge(col_a + ya * MI_SIZE * dst_stride, dst_stride, &pa,
+                           lpa, lca, bit_depth);
         }
-        if (!(is_lossless_current_block || is_lossless_prev_block)) {
-          avm_highbd_lpf_horizontal_generic(
-              p, dst_stride, params->filter_length_neg,
-              params->filter_length_pos, &params->q_threshold,
-              &params->side_threshold, bit_depth, is_lossless_prev_block,
-              is_lossless_current_block);
-        } else if (!(is_lossless_current_block && is_lossless_prev_block)) {
-          avm_highbd_lpf_horizontal_generic_c(
-              p, dst_stride, params->filter_length_neg,
-              params->filter_length_pos, &params->q_threshold,
-              &params->side_threshold, bit_depth, is_lossless_prev_block,
-              is_lossless_current_block);
+        if (eb) {
+          horz_filter_edge(col_b + yb * MI_SIZE * dst_stride, dst_stride, pb,
+                           lpb, lcb, bit_depth);
         }
       }
-
-      // advance the destination pointer
-      prev_y = curr_y;
-      *tx_size = cur_tx_size;
-      advance_units = tx_size_high_unit[cur_tx_size];
-      y += advance_units;
-      p += advance_units * dst_stride * MI_SIZE;
-      params += advance_units;
-      tx_size += advance_units;
-      mi_size_min_width += advance_units;
+      ya += adv_a;
+      yb += adv_b;
     }
+    x += pair ? 2 : 1;
   }
 }
 

@@ -199,6 +199,19 @@ void avm_highbd_lpf_horizontal_generic_c(uint16_t *s, int pitch,
   }
 }
 
+void avm_highbd_lpf_horizontal_generic_dual_c(
+    uint16_t *s, int pitch, int filt_width_neg0, int filt_width_pos0,
+    const uint16_t *q_thresh0, const uint16_t *side_thresh0,
+    int filt_width_neg1, int filt_width_pos1, const uint16_t *q_thresh1,
+    const uint16_t *side_thresh1, int bd) {
+  avm_highbd_lpf_horizontal_generic_c(s, pitch, filt_width_neg0,
+                                      filt_width_pos0, q_thresh0, side_thresh0,
+                                      bd, 0, 0);
+  avm_highbd_lpf_horizontal_generic_c(s + 4, pitch, filt_width_neg1,
+                                      filt_width_pos1, q_thresh1, side_thresh1,
+                                      bd, 0, 0);
+}
+
 void avm_highbd_lpf_vertical_generic_c(uint16_t *s, int pitch,
                                        int filt_width_neg, int filt_width_pos,
                                        const uint16_t *q_thresh,
