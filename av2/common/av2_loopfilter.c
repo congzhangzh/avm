@@ -875,6 +875,13 @@ void av2_filter_block_plane_vert(AV2_COMMON *const cm,
 
   const uint32_t plane_width = plane_ptr->dst.width;
   const uint32_t plane_height = plane_ptr->dst.height;
+  // Per-frame state, read once: the filter calls store pixels through
+  // uint16_t pointers, which the compiler must assume may alias *cm.
+  const int has_lossless_segment = cm->features.has_lossless_segment;
+  // The encoder's search (dlk_rd_flag) never filters tile edges.
+  const int check_tile_edge =
+      dlk_rd_flag || cm->seq_params.disable_loopfilters_across_tiles;
+  const avm_bit_depth_t bit_depth = cm->seq_params.bit_depth;
 
   for (int y = 0; y < y_range; y++) {
     // Stripes below the frame: see lpf_cache_is_empty().
@@ -922,39 +929,31 @@ void av2_filter_block_plane_vert(AV2_COMMON *const cm,
         cur_tx_size = TX_4X4;
       }
 
-      if (!dlk_rd_flag ||
-          !is_vert_tile_boundary(&cm->tiles, mi_col + (x << scale_horz))) {
-        const avm_bit_depth_t bit_depth = cm->seq_params.bit_depth;
-        bool is_lossless_current_block = get_lossless_flag(
-            cm, curr_x, curr_y, scale_horz, scale_vert, plane, plane_ptr);
-        bool is_lossless_prev_block = get_lossless_flag(
-            cm, prev_x, curr_y, scale_horz, scale_vert, plane, plane_ptr);
-        bool skip_deblock_lossless =
-            is_lossless_current_block && is_lossless_prev_block;
-
-        int do_filter = 1;
-        if (cm->seq_params.disable_loopfilters_across_tiles) {
-          if (is_vert_tile_boundary(&cm->tiles, mi_col + (x << scale_horz)))
-            do_filter = 0;
+      // Most edges have no filter: test that first, the other checks below
+      // only read state and can only turn a filter off.
+      if ((params->filter_length_neg || params->filter_length_pos) &&
+          (!check_tile_edge ||
+           !is_vert_tile_boundary(&cm->tiles, mi_col + (x << scale_horz)))) {
+        bool is_lossless_current_block = false;
+        bool is_lossless_prev_block = false;
+        if (has_lossless_segment) {
+          is_lossless_current_block = get_lossless_flag(
+              cm, curr_x, curr_y, scale_horz, scale_vert, plane, plane_ptr);
+          is_lossless_prev_block = get_lossless_flag(
+              cm, prev_x, curr_y, scale_horz, scale_vert, plane, plane_ptr);
         }
-        if (do_filter) {
-          if (!skip_deblock_lossless &&
-              (params->filter_length_neg || params->filter_length_pos)) {
-            if (!(is_lossless_prev_block || is_lossless_current_block)) {
-              avm_highbd_lpf_vertical_generic(
-                  p, dst_stride, params->filter_length_neg,
-                  params->filter_length_pos, &params->q_threshold,
-                  &params->side_threshold, bit_depth, is_lossless_prev_block,
-                  is_lossless_current_block);
-
-            } else {
-              avm_highbd_lpf_vertical_generic_c(
-                  p, dst_stride, params->filter_length_neg,
-                  params->filter_length_pos, &params->q_threshold,
-                  &params->side_threshold, bit_depth, is_lossless_prev_block,
-                  is_lossless_current_block);
-            }
-          }
+        if (!(is_lossless_prev_block || is_lossless_current_block)) {
+          avm_highbd_lpf_vertical_generic(
+              p, dst_stride, params->filter_length_neg,
+              params->filter_length_pos, &params->q_threshold,
+              &params->side_threshold, bit_depth, is_lossless_prev_block,
+              is_lossless_current_block);
+        } else if (!(is_lossless_current_block && is_lossless_prev_block)) {
+          avm_highbd_lpf_vertical_generic_c(
+              p, dst_stride, params->filter_length_neg,
+              params->filter_length_pos, &params->q_threshold,
+              &params->side_threshold, bit_depth, is_lossless_prev_block,
+              is_lossless_current_block);
         }
       }
 
@@ -1004,6 +1003,13 @@ void av2_filter_block_plane_horz(AV2_COMMON *const cm,
 
   const uint32_t plane_width = plane_ptr->dst.width;
   const uint32_t plane_height = plane_ptr->dst.height;
+  // Per-frame state, read once: the filter calls store pixels through
+  // uint16_t pointers, which the compiler must assume may alias *cm.
+  const int has_lossless_segment = cm->features.has_lossless_segment;
+  // The encoder's search (dlk_rd_flag) never filters tile edges.
+  const int check_tile_edge =
+      dlk_rd_flag || cm->seq_params.disable_loopfilters_across_tiles;
+  const avm_bit_depth_t bit_depth = cm->seq_params.bit_depth;
 
   for (int x = 0; x < x_range; x++) {
     // Columns right of the frame: see lpf_cache_is_empty().
@@ -1042,38 +1048,31 @@ void av2_filter_block_plane_horz(AV2_COMMON *const cm,
         cur_tx_size = TX_4X4;
       }
 
-      if (!dlk_rd_flag ||
-          !is_horz_tile_boundary(&cm->tiles, mi_row + (y << scale_vert))) {
-        bool is_lossless_current_block = get_lossless_flag(
-            cm, curr_x, curr_y, scale_horz, scale_vert, plane, plane_ptr);
-        bool is_lossless_prev_block = get_lossless_flag(
-            cm, curr_x, prev_y, scale_horz, scale_vert, plane, plane_ptr);
-        bool skip_deblock_lossless =
-            is_lossless_current_block && is_lossless_prev_block;
-
-        int do_filter = 1;
-        if (cm->seq_params.disable_loopfilters_across_tiles) {
-          if (is_horz_tile_boundary(&cm->tiles, mi_row + (y << scale_vert)))
-            do_filter = 0;
+      // Most edges have no filter: test that first, the other checks below
+      // only read state and can only turn a filter off.
+      if ((params->filter_length_neg || params->filter_length_pos) &&
+          (!check_tile_edge ||
+           !is_horz_tile_boundary(&cm->tiles, mi_row + (y << scale_vert)))) {
+        bool is_lossless_current_block = false;
+        bool is_lossless_prev_block = false;
+        if (has_lossless_segment) {
+          is_lossless_current_block = get_lossless_flag(
+              cm, curr_x, curr_y, scale_horz, scale_vert, plane, plane_ptr);
+          is_lossless_prev_block = get_lossless_flag(
+              cm, curr_x, prev_y, scale_horz, scale_vert, plane, plane_ptr);
         }
-        if (do_filter) {
-          const avm_bit_depth_t bit_depth = cm->seq_params.bit_depth;
-          if (!skip_deblock_lossless &&
-              (params->filter_length_neg || params->filter_length_pos)) {
-            if (!(is_lossless_current_block || is_lossless_prev_block)) {
-              avm_highbd_lpf_horizontal_generic(
-                  p, dst_stride, params->filter_length_neg,
-                  params->filter_length_pos, &params->q_threshold,
-                  &params->side_threshold, bit_depth, is_lossless_prev_block,
-                  is_lossless_current_block);
-            } else {
-              avm_highbd_lpf_horizontal_generic_c(
-                  p, dst_stride, params->filter_length_neg,
-                  params->filter_length_pos, &params->q_threshold,
-                  &params->side_threshold, bit_depth, is_lossless_prev_block,
-                  is_lossless_current_block);
-            }
-          }
+        if (!(is_lossless_current_block || is_lossless_prev_block)) {
+          avm_highbd_lpf_horizontal_generic(
+              p, dst_stride, params->filter_length_neg,
+              params->filter_length_pos, &params->q_threshold,
+              &params->side_threshold, bit_depth, is_lossless_prev_block,
+              is_lossless_current_block);
+        } else if (!(is_lossless_current_block && is_lossless_prev_block)) {
+          avm_highbd_lpf_horizontal_generic_c(
+              p, dst_stride, params->filter_length_neg,
+              params->filter_length_pos, &params->q_threshold,
+              &params->side_threshold, bit_depth, is_lossless_prev_block,
+              is_lossless_current_block);
         }
       }
 
