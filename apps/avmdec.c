@@ -99,6 +99,10 @@ static const arg_def_t datafilepath =
 #endif
 static const arg_def_t threadsarg =
     ARG_DEF("t", "threads", 1, "Max threads to use");
+static const arg_def_t rowmtarg =
+    ARG_DEF(NULL, "row-mt", 1,
+            "Decode the superblock rows of a tile in parallel (0: off "
+            "(default), 1: on; needs --threads > 1)");
 static const arg_def_t verbosearg =
     ARG_DEF("v", "verbose", 0, "Show version string");
 static const arg_def_t scalearg =
@@ -154,6 +158,7 @@ static const arg_def_t *all_args[] = { &help,
                                        &datafilepath,
 #endif
                                        &threadsarg,
+                                       &rowmtarg,
                                        &verbosearg,
                                        &scalearg,
                                        &fb_arg,
@@ -678,6 +683,7 @@ static int main_loop(int argc, const char **argv_) {
   int local_ops_selections[31][3];
   int num_local_ops_selections = 0;
   int output_all_layers = 0;
+  unsigned int row_mt = 0;
   int skip_film_grain = 0;
   int random_access_point_index = 0;
   int bru_opt_mode = 0;
@@ -820,6 +826,8 @@ static int main_loop(int argc, const char **argv_) {
       }
     } else if (arg_match(&arg, &summaryarg, argi)) {
       summary = 1;
+    } else if (arg_match(&arg, &rowmtarg, argi)) {
+      row_mt = arg_parse_uint(&arg);
     } else if (arg_match(&arg, &threadsarg, argi)) {
       cfg.threads = arg_parse_uint(&arg);
 #if !CONFIG_MULTITHREAD
@@ -1025,6 +1033,12 @@ static int main_loop(int argc, const char **argv_) {
               local_ops_selections[i][0], avm_codec_error(&decoder));
       goto fail;
     }
+  }
+
+  if (row_mt &&
+      AVM_CODEC_CONTROL_TYPECHECKED(&decoder, AV2D_SET_ROW_MT, row_mt)) {
+    fprintf(stderr, "Failed to set row_mt: %s\n", avm_codec_error(&decoder));
+    goto fail;
   }
 
   if (AVM_CODEC_CONTROL_TYPECHECKED(&decoder, AV2D_SET_OUTPUT_ALL_LAYERS,
