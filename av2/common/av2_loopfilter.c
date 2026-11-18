@@ -546,6 +546,59 @@ static int get_remaining_mi_size(const MB_MODE_INFO *mbmi,
   return mi_remain_size;
 }
 
+// State of one call of the vertical- or horizontal-edge pass: values that
+// set_lpf_parameters() needs for every edge but that are fixed for the call
+// (plane, direction, superblock size, threshold offsets, bit depth).
+typedef struct {
+  // Superblock height in units of this plane (mi_size_high[]).
+  int sb_mi_high;
+  // Superblock width in samples of this plane.
+  unsigned int sb_width;
+  // block_size_high[] of a 64x64 block in this plane, minus 1.
+  int block64_high_mask;
+  // The thresholds depend only on the block's qindex within a call:
+  // the last qindex seen and its thresholds.
+  int thr_valid;
+  int thr_qindex;
+  uint16_t q_thr;
+  uint16_t side_thr;
+} LPF_PASS_CTX;
+
+static void init_lpf_pass_ctx(LPF_PASS_CTX *ctx, const AV2_COMMON *cm,
+                              const struct macroblockd_plane *plane_ptr) {
+  const BLOCK_SIZE superblock_size = get_plane_block_size(
+      cm->sb_size, plane_ptr->subsampling_x, plane_ptr->subsampling_y);
+  assert(superblock_size < BLOCK_SIZES_ALL);
+  const BLOCK_SIZE block64_size = get_plane_block_size(
+      BLOCK_64X64, plane_ptr->subsampling_x, plane_ptr->subsampling_y);
+  ctx->sb_mi_high = mi_size_high[superblock_size];
+  ctx->sb_width = block_size_wide[superblock_size];
+  ctx->block64_high_mask = block_size_high[block64_size] - 1;
+  ctx->thr_valid = 0;
+  ctx->thr_qindex = 0;
+  ctx->q_thr = 0;
+  ctx->side_thr = 0;
+}
+
+// av2_get_filter_q() and av2_get_filter_side() of `mbmi`, computed once per
+// qindex: both are functions of mbmi->final_qindex_ac[plane] and of values
+// fixed for the call.
+static AVM_INLINE void get_filter_thresholds(
+    LPF_PASS_CTX *ctx, const loop_filter_info_n *lfi_n, EDGE_DIR edge_dir,
+    int plane, const MB_MODE_INFO *mbmi, int bit_depth, uint32_t *q,
+    uint32_t *side) {
+  const int qindex = mbmi->final_qindex_ac[plane];
+  if (!ctx->thr_valid || ctx->thr_qindex != qindex) {
+    ctx->q_thr = av2_get_filter_q(lfi_n, edge_dir, plane, mbmi, bit_depth);
+    ctx->side_thr =
+        av2_get_filter_side(lfi_n, edge_dir, plane, mbmi, bit_depth);
+    ctx->thr_qindex = qindex;
+    ctx->thr_valid = 1;
+  }
+  *q = ctx->q_thr;
+  *side = ctx->side_thr;
+}
+
 // Return TX_SIZE from get_transform_size(), so it is plane and direction
 // aware
 static TX_SIZE set_lpf_parameters(
@@ -553,7 +606,7 @@ static TX_SIZE set_lpf_parameters(
     AV2_COMMON *const cm, const MACROBLOCKD *const xd, const EDGE_DIR edge_dir,
     const uint32_t x, const uint32_t y, const int plane,
     const struct macroblockd_plane *const plane_ptr, TX_SIZE *tx_size,
-    int *mi_size_min, const int dlk_rd_flag) {
+    int *mi_size_min, const int dlk_rd_flag, LPF_PASS_CTX *ctx) {
   if (*mi_size_min) {
     *mi_size_min -= 1;
     return *tx_size;
@@ -600,10 +653,7 @@ static TX_SIZE set_lpf_parameters(
   TX_SIZE ts =
       get_transform_size(xd, mi[0], edge_dir, mi_row, mi_col, plane, tree_type,
                          plane_ptr, &tu_edge, &tx_info, &tx_m_partition_size);
-  const BLOCK_SIZE superblock_size = get_plane_block_size(
-      cm->sb_size, plane_ptr->subsampling_x, plane_ptr->subsampling_y);
-  assert(superblock_size < BLOCK_SIZES_ALL);
-  int mi_size_prev = mi_size_high[superblock_size];
+  int mi_size_prev = ctx->sb_mi_high;
   {
     const uint32_t coord = (VERT_EDGE == edge_dir) ? (x) : (y);
 
@@ -626,10 +676,10 @@ static TX_SIZE set_lpf_parameters(
     }
     // prepare outer edge parameters. deblock the edge if it's an edge of a TU
     {
-      const uint32_t curr_q = av2_get_filter_q(&cm->lf_info, edge_dir, plane,
-                                               mbmi, cm->seq_params.bit_depth);
-      const uint32_t curr_side = av2_get_filter_side(
-          &cm->lf_info, edge_dir, plane, mbmi, cm->seq_params.bit_depth);
+      uint32_t curr_q;
+      uint32_t curr_side;
+      get_filter_thresholds(ctx, &cm->lf_info, edge_dir, plane, mbmi,
+                            cm->seq_params.bit_depth, &curr_q, &curr_side);
 
       const int curr_skipped =
           mbmi->skip_txfm[plane_type] && is_inter_block(mbmi, tree_type);
@@ -667,10 +717,10 @@ static TX_SIZE set_lpf_parameters(
           check_sub_pu_edge(cm, xd, mi_prev, plane, prev_tree_type, scale_horz,
                             scale_vert, edge_dir, 0, &pv_ts, &pv_sub_pu_edge,
                             &pv_tx_m_partition_size);
-          const uint32_t pv_q = av2_get_filter_q(
-              &cm->lf_info, edge_dir, plane, mi_prev, cm->seq_params.bit_depth);
-          const uint32_t pv_side = av2_get_filter_side(
-              &cm->lf_info, edge_dir, plane, mi_prev, cm->seq_params.bit_depth);
+          uint32_t pv_q;
+          uint32_t pv_side;
+          get_filter_thresholds(ctx, &cm->lf_info, edge_dir, plane, mi_prev,
+                                cm->seq_params.bit_depth, &pv_q, &pv_side);
 
           const uint32_t pu_starting_coord = get_pu_starting_cooord(
               mbmi, plane, tree_type, scale_horz, scale_vert, edge_dir);
@@ -678,15 +728,12 @@ static TX_SIZE set_lpf_parameters(
           // if the current and the previous blocks are skipped,
           // deblock the edge if the edge belongs to a PU's edge only.
 
-          const BLOCK_SIZE block64_size = get_plane_block_size(
-              BLOCK_64X64, plane_ptr->subsampling_x, plane_ptr->subsampling_y);
-
-          const int vert_sb_mask = block_size_high[block64_size] - 1;
+          const int vert_sb_mask = ctx->block64_high_mask;
 
           int horz_superblock_edge =
               (HORZ_EDGE == edge_dir) && !(coord & vert_sb_mask);
 
-          const unsigned int hor_sb_size = block_size_wide[superblock_size];
+          const unsigned int hor_sb_size = ctx->sb_width;
           int vert_tile_edge = 0;
 
           for (int i = 1; i < cm->tiles.cols; ++i) {
@@ -882,6 +929,8 @@ void av2_filter_block_plane_vert(AV2_COMMON *const cm,
   const int check_tile_edge =
       dlk_rd_flag || cm->seq_params.disable_loopfilters_across_tiles;
   const avm_bit_depth_t bit_depth = cm->seq_params.bit_depth;
+  LPF_PASS_CTX pass_ctx;
+  init_lpf_pass_ctx(&pass_ctx, cm, plane_ptr);
 
   for (int y = 0; y < y_range; y++) {
     // Stripes below the frame: see lpf_cache_is_empty().
@@ -920,7 +969,8 @@ void av2_filter_block_plane_vert(AV2_COMMON *const cm,
 
       cur_tx_size = set_lpf_parameters(
           params, prev_x, curr_y, cm, xd, VERT_EDGE, curr_x, curr_y, plane,
-          plane_ptr, tx_size, mi_size_min_height, dlk_rd_flag);
+          plane_ptr, tx_size, mi_size_min_height, dlk_rd_flag,
+          &pass_ctx);
 
       if (cur_tx_size == TX_INVALID) {
         params->filter_length_neg = 0;
@@ -1010,6 +1060,8 @@ void av2_filter_block_plane_horz(AV2_COMMON *const cm,
   const int check_tile_edge =
       dlk_rd_flag || cm->seq_params.disable_loopfilters_across_tiles;
   const avm_bit_depth_t bit_depth = cm->seq_params.bit_depth;
+  LPF_PASS_CTX pass_ctx;
+  init_lpf_pass_ctx(&pass_ctx, cm, plane_ptr);
 
   for (int x = 0; x < x_range; x++) {
     // Columns right of the frame: see lpf_cache_is_empty().
@@ -1040,7 +1092,8 @@ void av2_filter_block_plane_horz(AV2_COMMON *const cm,
 
       cur_tx_size = set_lpf_parameters(
           params, curr_x, prev_y, cm, xd, HORZ_EDGE, curr_x, curr_y, plane,
-          plane_ptr, tx_size, mi_size_min_width, dlk_rd_flag);
+          plane_ptr, tx_size, mi_size_min_width, dlk_rd_flag,
+          &pass_ctx);
       if (cur_tx_size == TX_INVALID) {
         params->filter_length_neg = 0;
         params->filter_length_pos = 0;
