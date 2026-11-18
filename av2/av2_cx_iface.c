@@ -1319,14 +1319,16 @@ static void set_rt_tool_set(struct av2_extracfg *extra_cfg) {
     // Camera-like content: detail concentrates in bands, and each superblock
     // row is a serial chain in the row-MT wavefront, so 64x64 superblocks
     // halve the longest chain (1440p, 4 threads: tile phase 71 -> 59 ms).
-    // Projecting one reference combination for TMVP is faster and, on such
-    // content, no worse (1.5 % fewer bits). Screen content keeps both: larger
-    // superblocks code it better, and scrolling relies on the full TMVP.
-    if (extra_cfg->content != AVM_CONTENT_SCREEN) {
-      if (extra_cfg->superblock_size == AVM_SUPERBLOCK_SIZE_DYNAMIC)
-        extra_cfg->superblock_size = AVM_SUPERBLOCK_SIZE_64X64;
-      extra_cfg->reduced_ref_frame_mvs_mode = 1;
-    }
+    // Screen content keeps the larger superblocks: they code it better.
+    if (extra_cfg->content != AVM_CONTENT_SCREEN &&
+        extra_cfg->superblock_size == AVM_SUPERBLOCK_SIZE_DYNAMIC)
+      extra_cfg->superblock_size = AVM_SUPERBLOCK_SIZE_64X64;
+    // Projecting one reference combination for TMVP is faster and no worse:
+    // camera content 1.5 % fewer bits; screen content scrolling at 1 to 64
+    // pixels a frame (QP sweeps, 1440p and 1080p) equal bits and PSNR within
+    // noise, a fast-scrolling desktop 3 % fewer bits, and decoding up to 9 %
+    // faster. With only past references, the nearest one carries the motion.
+    extra_cfg->reduced_ref_frame_mvs_mode = 1;
   }
 }
 
