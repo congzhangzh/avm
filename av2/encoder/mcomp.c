@@ -2709,9 +2709,10 @@ int av2_intrabc_hash_search(const AV2_COMP *cpi, const MACROBLOCKD *xd,
     count = AVMMIN(64, count);
   }
 
-  Iterator iterator = av2_hash_get_first_iterator(ref_frame_hash, hash_value1);
-  for (int i = 0; i < count; i++, avm_iterator_increment(&iterator)) {
-    block_hash ref_block_hash = *(block_hash *)(avm_iterator_get(&iterator));
+  const block_hash *const first_block_hash =
+      av2_hash_get_first_entry(ref_frame_hash, hash_value1);
+  for (int i = 0; i < count; i++) {
+    const block_hash ref_block_hash = first_block_hash[i];
     if (hash_value2 == ref_block_hash.hash_value2) {
       // Make sure the prediction is from valid area.
       const MV dv = { GET_MV_SUBPEL(ref_block_hash.y - y_pos),
