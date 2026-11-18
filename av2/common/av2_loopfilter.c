@@ -1158,15 +1158,35 @@ void av2_filter_block_plane_horz(AV2_COMMON *const cm,
         lpf_cache_is_empty(mi_size_min_width_buf, y_range))
       break;
     // Pair only inside the frame: right of it, whether column b is walked
-    // at all depends on the cache after column a.
-    const int pair =
-        x + 1 < x_range && x_origin + (x + 1) * MI_SIZE < plane_width;
+    // at all depends on the cache after column a. Pair only where the dual
+    // kernel is a real 8-lane one (NEON); elsewhere it is two single calls
+    // and the paired walk costs more than it saves.
+    const int pair = HAVE_NEON && x + 1 < x_range &&
+                     x_origin + (x + 1) * MI_SIZE < plane_width;
     const uint32_t xa = x_origin + x * MI_SIZE;
     const uint32_t xb = xa + MI_SIZE;
     uint16_t *const col_a = dst_ptr + x * MI_SIZE;
     uint16_t *const col_b = col_a + MI_SIZE;
     uint32_t prev_a = prev_y_init, prev_b = prev_y_init;
-    int ya = 0, yb = pair ? 0 : y_end;
+    if (!pair) {
+      // One column alone, as the column-by-column walk.
+      for (int y = 0; y < y_end;) {
+        int adv;
+        bool lp = false, lc = false;
+        if (horz_edge_unit(cm, xd, plane, plane_ptr, mi_row, xa, y,
+                           y_origin + y * MI_SIZE, &prev_a, dlk_rd_flag,
+                           has_lossless_segment, check_tile_edge, params_buf,
+                           tx_size_buf, mi_size_min_width_buf, &pass_ctx, &adv,
+                           &lp, &lc)) {
+          horz_filter_edge(col_a + y * MI_SIZE * dst_stride, dst_stride,
+                           &params_buf[y], lp, lc, bit_depth);
+        }
+        y += adv;
+      }
+      ++x;
+      continue;
+    }
+    int ya = 0, yb = 0;
     while (ya < y_end || yb < y_end) {
       const int do_a = ya <= yb;
       const int do_b = yb <= ya;
@@ -1209,7 +1229,7 @@ void av2_filter_block_plane_horz(AV2_COMMON *const cm,
       ya += adv_a;
       yb += adv_b;
     }
-    x += pair ? 2 : 1;
+    x += 2;
   }
 }
 
