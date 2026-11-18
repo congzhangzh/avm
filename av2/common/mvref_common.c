@@ -3435,6 +3435,18 @@ motion_field_projection_side(AV2_COMMON *cm, MV_REFERENCE_FRAME start_frame,
   const int band_reach =
       MAX_OFFSET_HEIGHT_LOG2 > 0 ? MAX_OFFSET_HEIGHT_LOG2 + proc_size : 0;
 
+  // check_block_position_in(..., blk_row, blk_col, mi_r, mi_c) below tests
+  // the block's own position (blk_row, blk_col) against the frame and against
+  // a window around the processing block of the projected position
+  // (mi_r, mi_c). Its tests split into row tests, which depend on blk_row and
+  // mi_r, and column tests, which depend on blk_col and mi_c.
+  // A zero motion vector projects a block onto its own position, rounded down
+  // to the sample step: mi_c = blk_col rounded down. With the sample step no
+  // larger than the processing size, mi_c has the processing block of blk_col,
+  // so blk_col lies in the window for any tmvp_col_offset >= 0, and the column
+  // tests reduce to blk_col < tmvp_cols. The row tests are made once per row.
+  const int fast =
+      !enable_mv_traj && proc_sizel2 >= stepl2 && tmvp_col_offset >= 0;
   int band_end = INT_MIN;
   int skipped_band = 0;
 
@@ -3453,6 +3465,19 @@ motion_field_projection_side(AV2_COMMON *cm, MV_REFERENCE_FRAME start_frame,
         continue;
       }
     }
+    // The row tests of check_block_position_in() for this row (blk_row
+    // in the frame, inside the window of the processing block of mi_r).
+    const int blk_row_in = blk_row >= 0 && blk_row < tmvp_rows;
+    const int zero_mi_r = (blk_row >> stepl2) << stepl2;
+    const int zero_base_r = (zero_mi_r >> proc_sizel2) << proc_sizel2;
+    const int zero_row_ok =
+        blk_row_in && blk_row >= zero_base_r - MAX_OFFSET_HEIGHT_LOG2 &&
+        blk_row < zero_base_r + proc_size + MAX_OFFSET_HEIGHT_LOG2;
+    // For a projected position they depend on the row offset alone: made
+    // again when it differs from the last one in this row.
+    int row_cache_offset = INT_MIN;
+    int row_cache_ok = 0;
+    int row_cache_mi_r = 0;
     for (int blk_col = 0; blk_col < start_mvs_cols; blk_col += step) {
       MV_REF *mv_ref = &mv_ref_base[blk_row * start_mvs_cols + blk_col];
       if (note_other_side) {
@@ -3467,6 +3492,84 @@ motion_field_projection_side(AV2_COMMON *cm, MV_REFERENCE_FRAME start_frame,
       if (is_inter_ref_frame(ref_frame)) {
         if (!enable_mv_traj && !ref_projectable[ref_frame]) continue;
         const int_mv stored_mv = mv_ref->mv[side_idx];
+        if (fast) {
+          // The code below without trajectories, where ref_projectable[]
+          // stands for its tests of end_frame and of the frame offset.
+          if (stored_mv.as_int == 0) {
+            // Most blocks of screen content: the zero vector case below.
+            if (!zero_row_ok || blk_col >= tmvp_cols) continue;
+            const int mi_c = (blk_col >> stepl2) << stepl2;
+            TPL_MV_REF *const tpl = &tpl_mvs_rows[zero_mi_r][mi_c];
+            if (tpl->mfmv0.as_int == INVALID_MV ||
+                (target_frame != -1 &&
+                 start_ref_map[ref_frame] == target_frame &&
+                 tpl->ref_frame_offset != ref_abs_offset[ref_frame])) {
+              tpl->mfmv0.as_int = 0;
+              tpl->ref_frame_offset = side_idx == 1 ? ref_abs_offset[ref_frame]
+                                                    : ref_offset[ref_frame];
+            }
+            continue;
+          }
+          if (ref_frame != last_ref_frame ||
+              stored_mv.as_int != last_stored_mv.as_int) {
+            last_ref_frame = ref_frame;
+            last_stored_mv = stored_mv;
+            last_ref_mv = stored_mv.as_mv;
+            fetch_mv_from_tmvp(&last_ref_mv);
+            last_proj_ready = 0;
+          }
+          int mi_r, mi_c;
+          int mv_row = 0, mv_col = 0;
+          if (last_ref_mv.row == 0 && last_ref_mv.col == 0) {
+            if (!zero_row_ok || blk_col >= tmvp_cols) continue;
+            mi_c = (blk_col >> stepl2) << stepl2;
+            mi_r = zero_mi_r;
+          } else {
+            if (!last_proj_ready) {
+              MV proj_mv;
+              tip_get_mv_projection(&proj_mv, last_ref_mv,
+                                    temporal_scale_factor[ref_frame]);
+              last_proj_mv = proj_mv;
+              last_row_offset = tmvp_mv_offset(proj_mv.row);
+              last_col_offset = tmvp_mv_offset(proj_mv.col);
+              last_proj_ready = 1;
+            }
+            // get_block_position_no_constraint() and
+            // check_block_position_in(), split into row and column tests.
+            if (last_row_offset != row_cache_offset) {
+              const int row = blk_row + last_row_offset;
+              const int aligned_r = (row >> stepl2) << stepl2;
+              const int base_r = (aligned_r >> proc_sizel2) << proc_sizel2;
+              row_cache_offset = last_row_offset;
+              row_cache_mi_r = aligned_r;
+              row_cache_ok =
+                  row >= 0 && row < tmvp_rows && blk_row_in &&
+                  blk_row >= base_r - MAX_OFFSET_HEIGHT_LOG2 &&
+                  blk_row < base_r + proc_size + MAX_OFFSET_HEIGHT_LOG2;
+            }
+            if (!row_cache_ok) continue;
+            const int col = blk_col + last_col_offset;
+            if (col < 0 || col >= tmvp_cols || blk_col >= tmvp_cols) continue;
+            mi_c = (col >> stepl2) << stepl2;
+            const int base_c = (mi_c >> proc_sizel2) << proc_sizel2;
+            if (blk_col < base_c - tmvp_col_offset ||
+                blk_col >= base_c + proc_size + tmvp_col_offset)
+              continue;
+            mi_r = row_cache_mi_r;
+            mv_row = side_idx == 1 ? -last_ref_mv.row : last_ref_mv.row;
+            mv_col = side_idx == 1 ? -last_ref_mv.col : last_ref_mv.col;
+          }
+          TPL_MV_REF *const tpl = &tpl_mvs_rows[mi_r][mi_c];
+          if (tpl->mfmv0.as_int == INVALID_MV ||
+              (target_frame != -1 && start_ref_map[ref_frame] == target_frame &&
+               tpl->ref_frame_offset != ref_abs_offset[ref_frame])) {
+            tpl->mfmv0.as_mv.row = mv_row;
+            tpl->mfmv0.as_mv.col = mv_col;
+            tpl->ref_frame_offset = side_idx == 1 ? ref_abs_offset[ref_frame]
+                                                  : ref_offset[ref_frame];
+          }
+          continue;
+        }
         if (ref_frame != last_ref_frame ||
             stored_mv.as_int != last_stored_mv.as_int) {
           last_ref_frame = ref_frame;
