@@ -737,6 +737,9 @@ typedef struct SB_INFO {
   int mi_col;
   BruActiveMode sb_active_mode;
   PARTITION_TREE *ptree_root[2];
+  // Decoder only: nodes of earlier trees of this superblock, kept for reuse
+  // (linked through 'parent'). Always NULL in the encoder.
+  PARTITION_TREE *ptree_spare;
   MvSubpelPrecision sb_mv_precision;
 } SB_INFO;
 
