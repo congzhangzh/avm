@@ -1341,11 +1341,24 @@ void av2_build_intrabc_hash_table_mt(AV2_COMP *cpi) {
   if (cpi->sf.mv_sf.hash_max_8x8_intrabc_blocks) {
     max_sb_size = AVMMIN(8, max_sb_size);
   }
+  hash_table *const table = &intrabc_hash_info->intrabc_hash_table;
   int src_idx = 0;
   for (int size = 4; size <= max_sb_size; size *= 2, src_idx = !src_idx) {
     job.block_size = size;
     job.src_idx = src_idx;
     run_intrabc_hash_phase(mt_info, &job, HASH_PHASE_BLOCK);
+    if (intrabc_hash_info->use_crc32c) {
+      // Buffer !src_idx now holds this size, src_idx the previous one (if a
+      // block size): the last two sizes stay there.
+      table->block_crc[av2_hash_block_size_index(size)] =
+          job.block_hash_values[!src_idx][0];
+      if (size >= 8) {
+        table->block_crc[av2_hash_block_size_index(size >> 1)] =
+            job.block_hash_values[src_idx][0];
+      }
+      if (size >= 16)
+        table->block_crc[av2_hash_block_size_index(size >> 2)] = NULL;
+    }
     if (size >= min_alloc_size) {
       run_intrabc_hash_phase(mt_info, &job, HASH_PHASE_COUNT);
       if (!av2_hash_table_alloc_size(&intrabc_hash_info->intrabc_hash_table,
@@ -1359,9 +1372,20 @@ void av2_build_intrabc_hash_table_mt(AV2_COMP *cpi) {
 
   for (int i = 0; i < job.num_workers; i++) avm_free(job.counts[i]);
   for (int k = 0; k < 2; k++) {
-    avm_free(job.block_hash_values[k][0]);
-    if (!intrabc_hash_info->use_crc32c) avm_free(job.block_hash_values[k][1]);
+    if (intrabc_hash_info->use_crc32c) {
+      // Kept for the search (block_crc), freed with the table.
+      table->crc_buf[k] = job.block_hash_values[k][0];
+    } else {
+      avm_free(job.block_hash_values[k][0]);
+      avm_free(job.block_hash_values[k][1]);
+    }
     for (int j = 0; j < 3; j++) avm_free(job.is_block_same[k][j]);
+  }
+  if (intrabc_hash_info->use_crc32c) {
+    table->frame_buf = cpi->source->y_buffer;
+    table->frame_stride = cpi->source->y_stride;
+    table->frame_width = pic_width;
+    table->frame_height = pic_height;
   }
 }
 

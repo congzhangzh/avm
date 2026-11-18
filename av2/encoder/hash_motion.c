@@ -74,10 +74,7 @@ void av2_hash_table_init(IntraBCHashInfo *intrabc_hash_info) {
     intrabc_hash_info->g_crc_initialized = 1;
   }
   hash_table *const t = &intrabc_hash_info->intrabc_hash_table;
-  for (int s = 0; s < HASH_TABLE_NUM_SIZES; s++) {
-    t->start[s] = NULL;
-    t->entries[s] = NULL;
-  }
+  memset(t, 0, sizeof(*t));
 }
 
 void av2_hash_table_clear_all(hash_table *p_hash_table) {
@@ -86,7 +83,13 @@ void av2_hash_table_clear_all(hash_table *p_hash_table) {
     avm_free(p_hash_table->entries[s]);
     p_hash_table->start[s] = NULL;
     p_hash_table->entries[s] = NULL;
+    p_hash_table->block_crc[s] = NULL;
   }
+  for (int k = 0; k < 2; k++) {
+    avm_free(p_hash_table->crc_buf[k]);
+    p_hash_table->crc_buf[k] = NULL;
+  }
+  p_hash_table->frame_buf = NULL;
 }
 
 void av2_hash_table_destroy(hash_table *p_hash_table) {
@@ -337,6 +340,28 @@ void av2_add_to_hash_map_by_row_with_precal_data(hash_table *p_hash_table,
                        pic_height, block_size, 0, INT_MAX, counts);
   }
   avm_free(counts);
+}
+
+int av2_hash_get_frame_block_hash(const hash_table *p_hash_table,
+                                  const uint16_t *y_src, int stride, int x_pos,
+                                  int y_pos, int block_size,
+                                  uint32_t *hash_value1,
+                                  uint32_t *hash_value2) {
+  const int s = av2_hash_block_size_index(block_size);
+  if (s < 0 || p_hash_table->block_crc[s] == NULL) return 0;
+  const int width = p_hash_table->frame_width;
+  if (stride != p_hash_table->frame_stride || x_pos < 0 || y_pos < 0 ||
+      x_pos > width - block_size ||
+      y_pos > p_hash_table->frame_height - block_size ||
+      y_src != p_hash_table->frame_buf + (ptrdiff_t)y_pos * stride + x_pos)
+    return 0;
+  // The value the table build computed for this block from the same pixels,
+  // in the same order as av2_get_block_hash_value(): 2x2 groups, then four
+  // half-size blocks (top left, top right, bottom left, bottom right).
+  const uint32_t crc = p_hash_table->block_crc[s][y_pos * width + x_pos];
+  *hash_value1 = (crc & ((1 << kSrcBits) - 1)) + ((uint32_t)s << kSrcBits);
+  *hash_value2 = crc;
+  return 1;
 }
 
 int av2_hash_is_horizontal_perfect(const YV12_BUFFER_CONFIG *picture,
