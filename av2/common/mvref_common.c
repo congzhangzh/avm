@@ -4838,6 +4838,20 @@ void span_submvs(const AV2_COMMON *cm, SUBMB_INFO **submi, int mi_row,
   // Both motion vectors are all a SUBMB_INFO holds; as in span_submv(), a
   // store through a pointer that aliases submi[0] rewrites what it holds.
   const SUBMB_INFO info = *submi[0];
+  const CommonModeInfoParams *const mi_params = &cm->mi_params;
+  if (mi_params->submi_grid_prefilled &&
+      mi_params->mi_alloc_bsize == BLOCK_4X4) {
+    // The decoder's grid holds, for every 4x4 inside the frame, a pointer to
+    // the 4x4's own element of mi_alloc_sub (dec_setup_mi()), so the
+    // elements of a row of the block are adjacent: store them directly.
+    SUBMB_INFO *dst = mi_params->mi_alloc_sub +
+                      mi_row * mi_params->mi_alloc_stride + mi_col;
+    for (int y = 0; y < y_inside_boundary; y++) {
+      for (int x = 0; x < x_inside_boundary; x++) dst[x] = info;
+      dst += mi_params->mi_alloc_stride;
+    }
+    return;
+  }
   for (int y = 0; y < y_inside_boundary; y++) {
     SUBMB_INFO **const row = submi + y * stride;
     for (int x = (y == 0); x < x_inside_boundary; x++) *row[x] = info;
