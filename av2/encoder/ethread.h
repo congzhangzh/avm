@@ -46,6 +46,11 @@ void av2_setup_mi_mt(struct AV2_COMP *cpi);
 // av2_setup_motion_field() with its projections spread over the workers.
 void av2_setup_motion_field_mt(struct AV2_COMP *cpi);
 
+// Builds the frame's intraBC hash table (cpi->td.mb.intrabc_hash_info) from
+// cpi->source, its work spread over the workers; the table is the same for
+// any number of workers.
+void av2_build_intrabc_hash_table_mt(struct AV2_COMP *cpi);
+
 void av2_fp_encode_tiles_row_mt(AV2_COMP *cpi);
 
 int av2_fp_compute_num_enc_workers(AV2_COMP *cpi);

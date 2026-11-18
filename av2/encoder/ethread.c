@@ -21,6 +21,7 @@
 #include "av2/encoder/firstpass.h"
 #include "av2/encoder/global_motion.h"
 #include "av2/encoder/global_motion_facade.h"
+#include "av2/encoder/hash_motion.h"
 #include "av2/encoder/rdopt.h"
 #include "avm_dsp/avm_dsp_common.h"
 #include "av2/encoder/tpl_model.h"
@@ -1201,6 +1202,167 @@ void av2_setup_motion_field_mt(AV2_COMP *cpi) {
     for (int i = n - 1; i >= 0; i--) winterface->sync(&mt_info->workers[i]);
   }
   av2_finish_motion_field(cm);
+}
+
+enum {
+  HASH_PHASE_2X2,    // 2x2 hashes, a band of rows each
+  HASH_PHASE_BLOCK,  // block_size hashes from block_size / 2, rows
+  HASH_PHASE_COUNT,  // blocks to add per bucket, a band of columns each
+  HASH_PHASE_FILL,   // store the blocks of that band in the table
+};
+
+typedef struct {
+  IntraBCHashInfo *info;
+  const YV12_BUFFER_CONFIG *picture;
+  uint32_t *block_hash_values[2][2];
+  int8_t *is_block_same[2][3];
+  uint32_t *counts[MAX_NUM_THREADS];
+  int phase;
+  int block_size;
+  int src_idx;
+  int num_workers;
+} IntraBCHashJob;
+
+static int intrabc_hash_worker_hook(void *arg1, void *arg2) {
+  IntraBCHashJob *const job = (IntraBCHashJob *)arg1;
+  const int i = (int)(intptr_t)arg2;
+  const int n = job->num_workers;
+  const int pic_width = job->picture->y_crop_width;
+  const int pic_height = job->picture->y_crop_height;
+  const int rows = (pic_height + n - 1) / n;
+  const int cols = (pic_width + n - 1) / n;
+  const int src = job->src_idx, dst = !job->src_idx;
+  hash_table *const table = &job->info->intrabc_hash_table;
+  switch (job->phase) {
+    case HASH_PHASE_2X2:
+    case HASH_PHASE_BLOCK: {
+      // The CRC calculators keep state while they run: a copy per worker.
+      IntraBCHashInfo info = *job->info;
+      if (job->phase == HASH_PHASE_2X2) {
+        av2_generate_block_2x2_hash_value_rows(
+            &info, job->picture, job->block_hash_values[0],
+            job->is_block_same[0], rows * i, rows * (i + 1));
+      } else {
+        av2_generate_block_hash_value_rows(
+            &info, job->picture, job->block_size, job->block_hash_values[src],
+            job->block_hash_values[dst], job->is_block_same[src],
+            job->is_block_same[dst], rows * i, rows * (i + 1));
+      }
+      break;
+    }
+    case HASH_PHASE_COUNT:
+      av2_hash_count_cols(job->block_hash_values[dst][0],
+                          job->is_block_same[dst][2], pic_width, pic_height,
+                          job->block_size, cols * i, cols * (i + 1),
+                          job->counts[i]);
+      break;
+    case HASH_PHASE_FILL:
+      av2_hash_fill_cols(table, job->block_hash_values[dst],
+                         job->is_block_same[dst][2], pic_width, pic_height,
+                         job->block_size, cols * i, cols * (i + 1),
+                         job->counts[i]);
+      break;
+    default: assert(0);
+  }
+  return 1;
+}
+
+static void run_intrabc_hash_phase(MultiThreadInfo *mt_info,
+                                   IntraBCHashJob *job, int phase) {
+  job->phase = phase;
+  if (job->num_workers == 1) {
+    intrabc_hash_worker_hook(job, (void *)(intptr_t)0);
+    return;
+  }
+  const AVxWorkerInterface *const winterface = avm_get_worker_interface();
+  for (int i = job->num_workers - 1; i >= 0; i--) {
+    AVxWorker *const worker = &mt_info->workers[i];
+    worker->hook = intrabc_hash_worker_hook;
+    worker->data1 = job;
+    worker->data2 = (void *)(intptr_t)i;
+    // A worker without a thread would not run its share: run it here.
+    if (i == 0 || worker->status_ == NOT_OK)
+      winterface->execute(worker);
+    else
+      winterface->launch(worker);
+  }
+  for (int i = job->num_workers - 1; i >= 0; i--)
+    winterface->sync(&mt_info->workers[i]);
+}
+
+void av2_build_intrabc_hash_table_mt(AV2_COMP *cpi) {
+  AV2_COMMON *const cm = &cpi->common;
+  MultiThreadInfo *const mt_info = &cpi->mt_info;
+  IntraBCHashInfo *const intrabc_hash_info = &cpi->td.mb.intrabc_hash_info;
+  const int pic_width = cpi->source->y_crop_width;
+  const int pic_height = cpi->source->y_crop_height;
+  const size_t pic_size = (size_t)pic_width * pic_height;
+  IntraBCHashJob job;
+  memset(&job, 0, sizeof(job));
+  job.info = intrabc_hash_info;
+  job.picture = cpi->source;
+  job.num_workers =
+      AVMMIN(mt_info->workers ? mt_info->num_workers : 1, MAX_NUM_THREADS);
+  job.num_workers =
+      AVMMAX(1, AVMMIN(job.num_workers, AVMMIN(pic_width, pic_height)));
+
+  intrabc_hash_info->use_crc32c = cpi->sf.mv_sf.hash_use_crc32c;
+  for (int k = 0; k < 2; k++) {
+    CHECK_MEM_ERROR(cm, job.block_hash_values[k][0],
+                    avm_malloc(sizeof(uint32_t) * pic_size));
+    // With CRC32C both hashes of a block are the same value: one buffer.
+    if (intrabc_hash_info->use_crc32c) {
+      job.block_hash_values[k][1] = job.block_hash_values[k][0];
+    } else {
+      CHECK_MEM_ERROR(cm, job.block_hash_values[k][1],
+                      avm_malloc(sizeof(uint32_t) * pic_size));
+    }
+    for (int j = 0; j < 3; j++) {
+      CHECK_MEM_ERROR(cm, job.is_block_same[k][j],
+                      avm_malloc(sizeof(int8_t) * pic_size));
+    }
+  }
+  for (int i = 0; i < job.num_workers; i++) {
+    CHECK_MEM_ERROR(cm, job.counts[i],
+                    avm_malloc(sizeof(*job.counts[i]) * HASH_TABLE_NUM_KEYS));
+  }
+
+  // The worker threads start with the first frame's tile encoding; this may
+  // come first (a key frame): start them here, as the tile encoding would.
+  if (job.num_workers > 1 && mt_info->num_enc_workers == 0)
+    create_enc_workers(cpi, mt_info->num_workers);
+
+  av2_hash_table_init(intrabc_hash_info);
+  av2_hash_table_create(&intrabc_hash_info->intrabc_hash_table);
+  run_intrabc_hash_phase(mt_info, &job, HASH_PHASE_2X2);
+  // Hash data generated for screen contents is used for intraBC ME
+  const int min_alloc_size = block_size_wide[cm->mi_params.mi_alloc_bsize];
+  int max_sb_size = (1 << (cm->mib_size_log2 + MI_SIZE_LOG2));
+  if (cpi->sf.mv_sf.hash_max_8x8_intrabc_blocks) {
+    max_sb_size = AVMMIN(8, max_sb_size);
+  }
+  int src_idx = 0;
+  for (int size = 4; size <= max_sb_size; size *= 2, src_idx = !src_idx) {
+    job.block_size = size;
+    job.src_idx = src_idx;
+    run_intrabc_hash_phase(mt_info, &job, HASH_PHASE_BLOCK);
+    if (size >= min_alloc_size) {
+      run_intrabc_hash_phase(mt_info, &job, HASH_PHASE_COUNT);
+      if (!av2_hash_table_alloc_size(&intrabc_hash_info->intrabc_hash_table,
+                                     size, job.counts, job.num_workers)) {
+        avm_internal_error(&cm->error, AVM_CODEC_MEM_ERROR,
+                           "Failed to allocate the intraBC hash table");
+      }
+      run_intrabc_hash_phase(mt_info, &job, HASH_PHASE_FILL);
+    }
+  }
+
+  for (int i = 0; i < job.num_workers; i++) avm_free(job.counts[i]);
+  for (int k = 0; k < 2; k++) {
+    avm_free(job.block_hash_values[k][0]);
+    if (!intrabc_hash_info->use_crc32c) avm_free(job.block_hash_values[k][1]);
+    for (int j = 0; j < 3; j++) avm_free(job.is_block_same[k][j]);
+  }
 }
 
 void av2_encode_tiles_row_mt(AV2_COMP *cpi) {

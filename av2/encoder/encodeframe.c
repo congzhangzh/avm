@@ -2181,60 +2181,8 @@ static AVM_INLINE void encode_frame_internal(AV2_COMP *cpi) {
   if (!is_stat_generation_stage(cpi) && av2_use_hash_me(cpi)) {
     // TODO(any): move this outside of the recoding loop to avoid recalculating
     // the hash table.
-    // add to hash table
-    const int pic_width = cpi->source->y_crop_width;
-    const int pic_height = cpi->source->y_crop_height;
-    uint32_t *block_hash_values[2][2];
-    int8_t *is_block_same[2][3];
-    int k, j;
-
-    for (k = 0; k < 2; k++) {
-      for (j = 0; j < 2; j++) {
-        CHECK_MEM_ERROR(cm, block_hash_values[k][j],
-                        avm_malloc(sizeof(uint32_t) * pic_width * pic_height));
-      }
-
-      for (j = 0; j < 3; j++) {
-        CHECK_MEM_ERROR(cm, is_block_same[k][j],
-                        avm_malloc(sizeof(int8_t) * pic_width * pic_height));
-      }
-    }
-
-    intrabc_hash_info->use_crc32c = cpi->sf.mv_sf.hash_use_crc32c;
-    av2_hash_table_init(intrabc_hash_info);
-    av2_hash_table_create(&intrabc_hash_info->intrabc_hash_table);
+    av2_build_intrabc_hash_table_mt(cpi);
     hash_table_created = 1;
-    av2_generate_block_2x2_hash_value(intrabc_hash_info, cpi->source,
-                                      block_hash_values[0], is_block_same[0]);
-    // Hash data generated for screen contents is used for intraBC ME
-    const int min_alloc_size = block_size_wide[mi_params->mi_alloc_bsize];
-    int max_sb_size = (1 << (cm->mib_size_log2 + MI_SIZE_LOG2));
-    if (cpi->sf.mv_sf.hash_max_8x8_intrabc_blocks) {
-      max_sb_size = AVMMIN(8, max_sb_size);
-    }
-    int src_idx = 0;
-    for (int size = 4; size <= max_sb_size; size *= 2, src_idx = !src_idx) {
-      const int dst_idx = !src_idx;
-      av2_generate_block_hash_value(
-          intrabc_hash_info, cpi->source, size, block_hash_values[src_idx],
-          block_hash_values[dst_idx], is_block_same[src_idx],
-          is_block_same[dst_idx]);
-      if (size >= min_alloc_size) {
-        av2_add_to_hash_map_by_row_with_precal_data(
-            &intrabc_hash_info->intrabc_hash_table, block_hash_values[dst_idx],
-            is_block_same[dst_idx][2], pic_width, pic_height, size);
-      }
-    }
-
-    for (k = 0; k < 2; k++) {
-      for (j = 0; j < 2; j++) {
-        avm_free(block_hash_values[k][j]);
-      }
-
-      for (j = 0; j < 3; j++) {
-        avm_free(is_block_same[k][j]);
-      }
-    }
   }
 
   const CommonQuantParams *quant_params = &cm->quant_params;
