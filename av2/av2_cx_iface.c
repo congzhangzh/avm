@@ -1330,6 +1330,12 @@ static void set_rt_tool_set(struct av2_extracfg *extra_cfg) {
     // faster. With only past references, the nearest one carries the motion.
     extra_cfg->reduced_ref_frame_mvs_mode = 1;
   }
+  if (speed >= 10) {
+    // No semi-decoupled partitioning (a sequence-level switch, so inter
+    // frames lose extended SDP too): at FreeRDP's settings on 40 desktop,
+    // screen and camera streams the same bytes and 3.4 % less decoder work.
+    extra_cfg->enable_sdp = 0;
+  }
 }
 
 // update_config parameter is used to indicate whether extra command line
