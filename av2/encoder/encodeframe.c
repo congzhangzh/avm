@@ -2378,6 +2378,10 @@ void av2_encode_frame(AV2_COMP *cpi) {
   // Indicates whether or not to use a default reduced set for ext-tx
   // rather than the potential full set of 16 transforms
   features->reduced_tx_set_used = cpi->oxcf.txfm_cfg.reduced_tx_type_set;
+  // Realtime key frames at speed 10 and up: the smaller set 2 instead of the
+  // realtime default 1 (see av2_rt_cheap_intra_frame()).
+  if (av2_rt_cheap_intra_frame(cpi) && features->reduced_tx_set_used == 1)
+    features->reduced_tx_set_used = 2;
 
   if (cm->bru.enabled && features->all_lossless) {
     init_bru_params(cm);

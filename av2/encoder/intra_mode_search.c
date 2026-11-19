@@ -689,11 +689,14 @@ int64_t av2_rd_pick_intra_sbuv_mode(const AV2_COMP *const cpi, MACROBLOCK *x,
                 .intra_uv_mode_mask[txsize_sqr_up_map[max_tx_size]] &
             (1 << mode)))
         continue;
-      if (!intra_mode_cfg->enable_smooth_intra && mode >= UV_SMOOTH_PRED &&
-          mode <= UV_SMOOTH_H_PRED)
+      if ((!intra_mode_cfg->enable_smooth_intra ||
+           av2_rt_cheap_intra_frame(cpi)) &&
+          mode >= UV_SMOOTH_PRED && mode <= UV_SMOOTH_H_PRED)
         continue;
 
-      if (!intra_mode_cfg->enable_paeth_intra && mode == UV_PAETH_PRED)
+      if ((!intra_mode_cfg->enable_paeth_intra ||
+           av2_rt_cheap_intra_frame(cpi)) &&
+          mode == UV_PAETH_PRED)
         continue;
 
       // Init variables for cfl and angle delta
@@ -1492,12 +1495,14 @@ void search_fsc_mode(const AV2_COMP *const cpi, MACROBLOCK *x, int *rate,
           int64_t this_rd;
           RD_STATS tokenonly_rd_stats;
           if ((!cpi->oxcf.intra_mode_cfg.enable_smooth_intra ||
-               cpi->sf.intra_sf.disable_smooth_intra) &&
+               cpi->sf.intra_sf.disable_smooth_intra ||
+               av2_rt_cheap_intra_frame(cpi)) &&
               (mbmi->mode == SMOOTH_PRED || mbmi->mode == SMOOTH_H_PRED ||
                mbmi->mode == SMOOTH_V_PRED)) {
             continue;
           }
-          if (!cpi->oxcf.intra_mode_cfg.enable_paeth_intra &&
+          if ((!cpi->oxcf.intra_mode_cfg.enable_paeth_intra ||
+               av2_rt_cheap_intra_frame(cpi)) &&
               mbmi->mode == PAETH_PRED) {
             continue;
           }
@@ -1808,11 +1813,13 @@ int64_t av2_rd_pick_intra_sby_mode(const AV2_COMP *const cpi, ThreadData *td,
           int this_rate, this_rate_tokenonly, s;
           int64_t this_distortion, this_rd;
           if ((!cpi->oxcf.intra_mode_cfg.enable_smooth_intra ||
-               cpi->sf.intra_sf.disable_smooth_intra) &&
+               cpi->sf.intra_sf.disable_smooth_intra ||
+               av2_rt_cheap_intra_frame(cpi)) &&
               (mbmi->mode == SMOOTH_PRED || mbmi->mode == SMOOTH_H_PRED ||
                mbmi->mode == SMOOTH_V_PRED))
             continue;
-          if (!cpi->oxcf.intra_mode_cfg.enable_paeth_intra &&
+          if ((!cpi->oxcf.intra_mode_cfg.enable_paeth_intra ||
+               av2_rt_cheap_intra_frame(cpi)) &&
               mbmi->mode == PAETH_PRED)
             continue;
           is_directional_mode = av2_is_directional_mode(mbmi->mode);
