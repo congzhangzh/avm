@@ -803,7 +803,13 @@ int av2_get_cdef_context(const AV2_COMMON *const cm,
 
   const int left_cdef_mi_col = mi_col - cdef_size;
   MB_MODE_INFO *neighbor0 = NULL;
-  if (left_cdef_mi_col >= 0) {
+  // A left CDEF unit that starts left of this tile belongs to another tile,
+  // which another thread may be decoding right now: don't read its grid
+  // entry. Whatever block covers it starts left of the tile, so
+  // av2_check_cdef_mbmi_inside_tile() would reject it anyway; the context is
+  // the same.
+  if (left_cdef_mi_col >= 0 &&
+      (left_cdef_mi_col & block_mask) >= xd->tile.mi_col_start) {
     const int left_grid_idx = get_mi_grid_idx(mi_params, mi_row & block_mask,
                                               left_cdef_mi_col & block_mask);
     neighbor0 = mi_params->mi_grid_base[left_grid_idx];
