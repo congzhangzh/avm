@@ -148,6 +148,18 @@ static INLINE int get_dqv(const int32_t *dequant, int coeff_idx,
   return dqv;
 }
 
+// Number of bytes of a levels (or signs) buffer that the coefficient
+// contexts of a width x height transform block can reach: the block with
+// TX_PAD_TOP rows above, TX_PAD_BOTTOM rows below, TX_PAD_HOR columns of row
+// padding, and TX_PAD_END bytes after the last row. The contexts read at most
+// 4 rows below / 4 columns right of a coefficient (reverse scan) or 1 row
+// above / 1 column left (forward skip scan), all inside this area, so only it
+// needs clearing; the rest of the TX_PAD_2D buffer is never read.
+static INLINE int get_levels_pad_size(int width, int height) {
+  assert(width <= 32 && height <= 32);
+  return (width + TX_PAD_HOR) * (height + TX_PAD_VER) + TX_PAD_END;
+}
+
 static int read_low_range(avm_reader *r, avm_cdf_prob *cdf) {
   int br_level = 0;
   for (int idx = 0; idx < COEFF_BASE_RANGE; idx += BR_CDF_SIZE - 1) {
@@ -568,8 +580,9 @@ uint8_t av2_read_coeffs_txb_skip(const AV2_COMMON *const cm,
   const TX_SIZE txs_ctx = get_txsize_entropy_ctx(tx_size);
   const int size_ctx = AVMMIN(txs_ctx, TX_16X16);
   if (eob_data->eob > 1) {
-    memset(levels_buf, 0, sizeof(*levels_buf) * TX_PAD_2D);
-    memset(signs_buf, 0, sizeof(*signs_buf) * TX_PAD_2D);
+    const int pad_size = get_levels_pad_size(width, height);
+    memset(levels_buf, 0, sizeof(*levels_buf) * pad_size);
+    memset(signs_buf, 0, sizeof(*signs_buf) * pad_size);
     base_fsc_cdf_arr base_cdf = ec_ctx->coeff_base_cdf_idtx[size_ctx];
     br_cdf_arr br_cdf = ec_ctx->coeff_br_cdf_idtx[size_ctx];
     const int bob = av2_get_max_eob(tx_size) - bob_data->eob;
@@ -721,7 +734,8 @@ uint8_t av2_read_coeffs_txb(const AV2_COMMON *const cm, DecoderCodingBlock *dcb,
   }
 
   if (*eob > 1) {
-    memset(levels_buf, 0, sizeof(*levels_buf) * TX_PAD_2D);
+    memset(levels_buf, 0,
+           sizeof(*levels_buf) * get_levels_pad_size(width, height));
   }
 
   int tcq_mode = tcq_enable(cm->features.tcq_mode,
