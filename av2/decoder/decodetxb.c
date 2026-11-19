@@ -160,6 +160,29 @@ static INLINE int get_levels_pad_size(int width, int height) {
   return (width + TX_PAD_HOR) * (height + TX_PAD_VER) + TX_PAD_END;
 }
 
+// tcq_init_state() and tcq_next_state() of quant_common.c, inlined: the
+// coefficient loops below call the latter once per coefficient. Same
+// arithmetic and table.
+static AVM_FORCE_INLINE int dec_tcq_init_state(int tcq_mode) {
+  return tcq_mode << 8;
+}
+
+static AVM_FORCE_INLINE int dec_tcq_next_state(const int cur_state,
+                                               const int abs_level) {
+  const int tcq_mode = cur_state >> 8;
+  int state = cur_state & 0xFF;
+  const int next_state = tcq_mode << 8;
+
+  if (tcq_mode != TCQ_8ST) return next_state;
+
+  static const uint8_t next_state_lut_8st[TCQ_MAX_STATES][2] = {
+    { 0, 4 }, { 4, 0 }, { 1, 5 }, { 5, 1 },
+    { 6, 2 }, { 2, 6 }, { 7, 3 }, { 3, 7 }
+  };
+  if (state < 0 || state >= TCQ_MAX_STATES) state = 0;
+  return next_state | next_state_lut_8st[state][abs_level & 1];
+}
+
 static int read_low_range(avm_reader *r, avm_cdf_prob *cdf) {
   int br_level = 0;
   for (int idx = 0; idx < COEFF_BASE_RANGE; idx += BR_CDF_SIZE - 1) {
@@ -224,7 +247,7 @@ static INLINE void read_coeffs_reverse_2d(
       }
     }
     levels[get_padded_idx(pos, bwl)] = level;
-    *state = tcq_next_state(*state, level);
+    *state = dec_tcq_next_state(*state, level);
   }
 }
 
@@ -284,7 +307,7 @@ static INLINE void read_coeffs_reverse(
       }
     }
     levels[get_padded_idx(pos, bwl)] = level;
-    *state = tcq_next_state(*state, level);
+    *state = dec_tcq_next_state(*state, level);
   }
 }
 
@@ -740,7 +763,7 @@ uint8_t av2_read_coeffs_txb(const AV2_COMMON *const cm, DecoderCodingBlock *dcb,
 
   int tcq_mode = tcq_enable(cm->features.tcq_mode,
                             xd->lossless[mbmi->segment_id], plane, tx_class);
-  int state = tcq_init_state(tcq_mode);
+  int state = dec_tcq_init_state(tcq_mode);
 
   {
     // Read the non-zero coefficient with scan index eob-1
@@ -798,7 +821,7 @@ uint8_t av2_read_coeffs_txb(const AV2_COMMON *const cm, DecoderCodingBlock *dcb,
       }
     }
     levels[get_padded_idx(pos, bwl)] = level;
-    state = tcq_next_state(state, level);
+    state = dec_tcq_next_state(state, level);
   }
 
   bool enable_parity_hiding =
@@ -947,7 +970,7 @@ uint8_t av2_read_coeffs_txb(const AV2_COMMON *const cm, DecoderCodingBlock *dcb,
   }
 
   if (!xd->lossless[mbmi->segment_id] && tcq_mode) {
-    state = tcq_init_state(tcq_mode);
+    state = dec_tcq_init_state(tcq_mode);
     for (int c = *eob - 1; c >= 0; --c) {
       const int pos = scan[c];
       int Qx = tcq_quant(state);
@@ -978,7 +1001,7 @@ uint8_t av2_read_coeffs_txb(const AV2_COMMON *const cm, DecoderCodingBlock *dcb,
         tcoeffs[pos] = clamp(dq_coeff, min_value, max_value);
       }
       // state transition
-      state = tcq_next_state(state, level);
+      state = dec_tcq_next_state(state, level);
     }
   }
 
