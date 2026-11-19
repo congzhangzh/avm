@@ -9681,6 +9681,14 @@ void av2_rd_pick_inter_mode_sb(struct AV2_COMP *cpi,
       !frame_is_sframe(cm) && !thin_4xn_nx4;
 
   const int static_blk = is_rt_static_block(cpi, xd, bsize);
+  // A static block is searched with reference 0's NEARMV and GLOBALMV only,
+  // so keep them searchable: init_mode_skip_mask() drops them when reference
+  // 0's predicted-MV SAD is four times the best reference's, which a
+  // neighbour's motion can cause although the block is an exact copy of
+  // reference 0. Without them the block fell back to intra: on a 1440p typing
+  // clip at QP 100, one 128x128 DC block took PSNR-Y from 65 to 43 dB and the
+  // next 32 frames cost 50 times their usual bytes.
+  if (static_blk) mode_skip_mask.pred_modes[0] &= ~(uint32_t)INTER_NEAR_GLOBAL;
   // Realtime non-RD decision (camera content): the scored single-reference
   // candidates are searched best first, until nonrd_k of them gave an RD or
   // the next one scored more than rt_sf.nonrd_inter_gap percent behind the
