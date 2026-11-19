@@ -1503,6 +1503,89 @@ static void read_delta_q_params(AV2_COMMON *const cm, MACROBLOCKD *const xd,
   }
 }
 
+// Returns entry mode_idx of the list get_y_intra_mode_set() builds, without
+// building the rest of it: the decoder reads only this entry of
+// y_intra_mode_list, so it neither fills the list nor reads it. The entries
+// are generated in the same order as there, and generation stops at
+// mode_idx. Every mode value is below LUMA_MODE_COUNT (61), so a 64-bit
+// mask marks the modes already in the list. mode_idx < LUMA_MODE_COUNT by
+// the syntax (at most 12 for mode set 0, 13 + 2 * 16 + 15 = 60 otherwise),
+// and the full list has LUMA_MODE_COUNT entries, so the entry is always
+// reached.
+static int dec_get_y_intra_mode(const MB_MODE_INFO *mi,
+                                const MACROBLOCKD *const xd, int mode_idx) {
+  // The list starts with the non-directional modes in order.
+  if (mode_idx < NON_DIRECTIONAL_MODES_COUNT) return mode_idx;
+
+  int neighbor_joint_modes[2];
+  neighbor_joint_modes[0] = av2_get_joint_mode(xd->bottom_left_mbmi);
+  neighbor_joint_modes[1] = av2_get_joint_mode(xd->above_right_mbmi);
+  const int is_left_directional_mode =
+      neighbor_joint_modes[0] >= NON_DIRECTIONAL_MODES_COUNT ? 1 : 0;
+  const int is_above_directional_mode =
+      neighbor_joint_modes[1] >= NON_DIRECTIONAL_MODES_COUNT ? 1 : 0;
+  const int block_width = block_size_wide[mi->sb_type[PLANE_TYPE_Y]];
+  const int block_height = block_size_high[mi->sb_type[PLANE_TYPE_Y]];
+  const int is_large_block = (block_width * block_height > 64);
+  const int is_small_block = (mi->sb_type[PLANE_TYPE_Y] < BLOCK_8X8);
+
+  uint64_t selected = (UINT64_C(1) << NON_DIRECTIONAL_MODES_COUNT) - 1;
+  int n = NON_DIRECTIONAL_MODES_COUNT;  // entries in the list so far
+
+  if (is_small_block == 0) {
+    int directional_mode_cnt =
+        is_above_directional_mode + is_left_directional_mode;
+    if (directional_mode_cnt == 2 &&
+        neighbor_joint_modes[0] == neighbor_joint_modes[1])
+      directional_mode_cnt = 1;
+    if (directional_mode_cnt == 1 && is_left_directional_mode == 0) {
+      neighbor_joint_modes[0] = neighbor_joint_modes[1];
+    }
+    for (int i = 0; i < directional_mode_cnt; ++i) {
+      if (n == mode_idx) return neighbor_joint_modes[i];
+      ++n;
+      selected |= UINT64_C(1) << neighbor_joint_modes[i];
+    }
+    if (is_large_block) {
+      for (int i = 0; i < 4; ++i) {
+        for (int j = 0; j < directional_mode_cnt; ++j) {
+          const int left_derived_mode =
+              (neighbor_joint_modes[j] - i +
+               (56 - NON_DIRECTIONAL_MODES_COUNT - 1)) %
+                  56 +
+              NON_DIRECTIONAL_MODES_COUNT;
+          const int right_derived_mode = (neighbor_joint_modes[j] + i -
+                                          (NON_DIRECTIONAL_MODES_COUNT - 1)) %
+                                             56 +
+                                         NON_DIRECTIONAL_MODES_COUNT;
+          if (!(selected & (UINT64_C(1) << left_derived_mode))) {
+            if (n == mode_idx) return left_derived_mode;
+            ++n;
+            selected |= UINT64_C(1) << left_derived_mode;
+          }
+          if (!(selected & (UINT64_C(1) << right_derived_mode))) {
+            if (n == mode_idx) return right_derived_mode;
+            ++n;
+            selected |= UINT64_C(1) << right_derived_mode;
+          }
+        }
+      }
+    }
+  }
+
+  // The rest of the list: the default modes not yet in it.
+  for (int i = 0; i < LUMA_MODE_COUNT - NON_DIRECTIONAL_MODES_COUNT; ++i) {
+    const int mode = default_mode_list_y[i] + NON_DIRECTIONAL_MODES_COUNT;
+    if (!(selected & (UINT64_C(1) << mode))) {
+      if (n == mode_idx) return mode;
+      ++n;
+      selected |= UINT64_C(1) << mode;
+    }
+  }
+  assert(0 && "mode_idx beyond the luma intra mode list");
+  return DC_PRED;
+}
+
 // read mode set index and mode index in set for y component,
 // and map it to y mode and delta angle
 static void read_intra_luma_mode(MACROBLOCKD *const xd, avm_reader *r) {
@@ -1527,8 +1610,7 @@ static void read_intra_luma_mode(MACROBLOCKD *const xd, avm_reader *r) {
                avm_read_literal(r, 4, ACCT_INFO("mode_idx"));
   }
   assert(mode_idx < LUMA_MODE_COUNT);
-  get_y_intra_mode_set(mbmi, xd);
-  mbmi->joint_y_mode_delta_angle = mbmi->y_intra_mode_list[mode_idx];
+  mbmi->joint_y_mode_delta_angle = dec_get_y_intra_mode(mbmi, xd, mode_idx);
   av2_set_y_mode_and_delta_angle(mbmi->joint_y_mode_delta_angle, mbmi);
   mbmi->y_mode_idx = mode_idx;
   if (mbmi->joint_y_mode_delta_angle < NON_DIRECTIONAL_MODES_COUNT)
