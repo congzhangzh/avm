@@ -132,4 +132,11 @@ INSTANTIATE_TEST_SUITE_P(
                        ::testing::ValuesIn(kValidBlockSize)));
 #endif
 
+#if HAVE_NEON
+INSTANTIATE_TEST_SUITE_P(
+    NEON, AV2Crc32cHashTest,
+    ::testing::Combine(::testing::Values(&av2_get_crc32c_value_neon),
+                       ::testing::ValuesIn(kValidBlockSize)));
+#endif
+
 }  // namespace

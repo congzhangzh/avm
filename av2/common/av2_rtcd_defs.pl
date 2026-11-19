@@ -296,7 +296,7 @@ if (avm_config("CONFIG_AV2_ENCODER") eq "yes") {
 
   # hash
   add_proto qw/uint32_t av2_get_crc32c_value/, "void *crc_calculator, uint8_t *p, size_t length";
-  specialize qw/av2_get_crc32c_value sse4_2/;
+  specialize qw/av2_get_crc32c_value sse4_2 neon/;
 
   add_proto qw/void av2_get_horver_correlation_full/, " const int16_t *diff, int stride, int w, int h, float *hcorr, float *vcorr";
   specialize qw/av2_get_horver_correlation_full sse4_1 avx2 neon/;
